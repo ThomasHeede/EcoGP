@@ -49,6 +49,10 @@ class DataSampler(Dataset):
         self.environmental = list(XData.columns)
         self.X = torch.tensor(XData.values, dtype=torch.float32)
 
+        keep_non_nans = ~torch.any(self.X.isnan(), dim=1)
+        self.X = self.X[keep_non_nans]
+        self.Y = self.Y[keep_non_nans]
+
         # self.X += torch.rand_like(self.X) * 1e-1  # TODO: Fix adding of noice to make cov positive semidefinite
 
         # Normalize X
@@ -103,6 +107,8 @@ class DataSampler(Dataset):
             if True:  # Std norm coordinates
                 print("Standard Normalizing Coordinates")
                 self.coords = (self.coords - self.coords.mean(dim=0)) / self.coords.std(dim=0)
+
+            self.coords = self.coords[keep_non_nans]
 
             self.unique_coords, self.coords_inverse_indicies = torch.unique(self.coords, dim=0, return_inverse=True)
             print(f"{len(self.unique_coords)=}")
