@@ -27,7 +27,7 @@ if __name__ == "__main__":
 
     from sklearn import metrics
 
-    from configs.config_butterfly import config  # Import the config module
+    from configs.config_central_park import config  # Import the config module
 
     # ARGUMENTS
     environment = config["additive"]["environment"]
@@ -165,7 +165,11 @@ if __name__ == "__main__":
     test_Y = torch.concat(y_test_list)
     del y_prob_list, y_test_list
 
-    test_Y_prev = test_Y.sum(dim=0) / test_Y.shape[0]
+    if save_model_path:
+        import pandas as pd
+
+        pd.DataFrame(y_prob, columns=dataset.Y_cols_species, index=dataset.Y_idx_sites.to_numpy().reshape(-1)[test_dataset.indices]).to_csv(os.path.join(save_model_path, "Y_pred.csv"))
+        pd.DataFrame(test_Y, columns=dataset.Y_cols_species, index=dataset.Y_idx_sites.to_numpy().reshape(-1)[test_dataset.indices]).to_csv(os.path.join(save_model_path, "Y_true.csv"))
 
     metric_results = calculate_metrics(test_Y, y_prob)
 
