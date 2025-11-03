@@ -11,6 +11,7 @@ import sys
 import os
 
 from models.MultitaskVariationalStrategy import MultitaskVariationalStrategy
+from models.likelihoods import DirichletMultinomialLikelihood, BernoulliLikelihood
 
 
 class EcoGP(pyro.nn.PyroModule):
@@ -23,8 +24,11 @@ class EcoGP(pyro.nn.PyroModule):
                  unique_coordinates=None,
                  environment=True,
                  spatial=True,
-                 traits=True):
+                 traits=True,
+                 likelihood=None):
         super().__init__()
+
+        self.likelihood = likelihood
 
         self.environment = environment
         self.spatial = spatial
@@ -40,8 +44,8 @@ class EcoGP(pyro.nn.PyroModule):
 
         if self.spatial:
             self.n_latents_spatial = n_latents_spatial
-            self.eta = SpatialGP(n_latents=n_latents_spatial, unique_coordinates=unique_coordinates,
-                                 n_inducing_points=n_inducing_points_spatial)
+            self.g = SpatialGP(n_latents=n_latents_spatial, unique_coordinates=unique_coordinates,
+                               n_inducing_points=n_inducing_points_spatial)
 
     def model(self, batch):
         pyro.module("model", self)
@@ -56,128 +60,128 @@ class EcoGP(pyro.nn.PyroModule):
         z = 0
 
         if self.environment:
-            latents_plate = pyro.plate(name="latents_plate", size=self.n_latents_env, dim=-2)
-
             f_dist = self.f.pyro_model(batch.get("X"), name_prefix="f_GP")
 
             # Use a plate here to mark conditional independencies
-            with pyro.plate(".data_plate", dim=-1):
+            with pyro.plate("L_plate", dim=-1):
                 # Sample from latent function distribution
                 f_samples = pyro.sample(".f(x)", f_dist)
 
             f_samples = f_samples if f_samples.shape == torch.Size([n_samples, self.n_latents_env]) else f_samples.mean(
                 dim=0).reshape(n_samples, self.n_latents_env)
 
+            # if self.traits:
+            #     gamma = pyro.param("gamma", torch.zeros(self.n_latents_env, n_traits))
+            #     w_loc = batch.get("traits") @ gamma.T
+            # else:
+            #     w_loc = torch.zeros(n_species, self.n_latents_env)
+            #
+            # with species_plate:
+            #     w = pyro.sample("w", dist.Normal(loc=w_loc, scale=torch.ones_like(w_loc)).to_event(1))
+            # z = z + f_samples @ w.squeeze().reshape(n_species, self.n_latents_env).T
+
             if self.traits:
-                gamma = pyro.param("gamma", torch.zeros(self.n_latents_env, n_traits))
-                #                w_loc = gamma @ batch.get("traits").T
-                w_loc = batch.get("traits") @ gamma.T
-            else:
-                w_loc = torch.zeros(n_species, self.n_latents_env)
+                print("Traits not completed")
 
-            # Insert a dimension of size 1 for the 'samples' axis => [1, n_species, n_latents_env]
-            # w_loc = w_loc.unsqueeze(0)
+            w_loc = torch.zeros(self.n_latents_env, n_species)
+            w_scale = torch.ones(self.n_latents_env, n_species)
+            with species_plate, pyro.plate("env_latents_plate_w", self.n_latents_env, dim=-2):
+                w = pyro.sample("w", dist.Normal(loc=w_loc, scale=w_scale))
 
-            # scale is [n_species, n_latents_env], so also unsqueeze(0) => [1, n_species, n_latents_env]
-            # scale = torch.ones(n_species, n_latents_env).unsqueeze(0)
-
-            #            with pyro.plate(name="samples_plate-a", size=n_samples):
-            #          with pyro.plate(name="species_plate-a", size=n_species):# species_plate, latents_plate:
-
-            with pyro.plate("species_plate-a", size=n_species, dim=-1):
-                w = pyro.sample("w", dist.Normal(loc=w_loc, scale=torch.ones_like(w_loc)).to_event(1))
-
-            f_samples = f_samples if f_samples.shape == torch.Size([n_samples, self.n_latents_env]) else f_samples.mean(
-                dim=0).reshape(n_samples, self.n_latents_env)
-
-            z = z + f_samples @ w.squeeze().T
+            z = z + f_samples @ w
 
         if self.spatial:
-            eta_dist = self.eta.pyro_model(batch.get("coords"), name_prefix="eta_GP")
+            g_dist = self.g.pyro_model(batch.get("coords"), name_prefix="g_GP")
 
-            with pyro.plate(".eta_data_plate", dim=-1):
+            with pyro.plate("M_plate", dim=-1):
                 # Sample from latent function distribution
-                eta_samples = pyro.sample(".eta(coords)", eta_dist)
+                g_samples = pyro.sample(".g(coords)", g_dist)
 
-            eta_samples = eta_samples if eta_samples.shape == torch.Size(
-                [batch["n_locs_batch"], self.n_latents_spatial]) else eta_samples.mean(dim=0).reshape(
-                batch["n_locs_batch"], self.n_latents_spatial)
-            eta_samples = eta_samples[batch["batch_inverse"]]
+            g_samples = g_samples if g_samples.shape == torch.Size(
+                [n_samples, self.n_latents_spatial]) else g_samples.mean(dim=0).reshape(
+                n_samples, self.n_latents_spatial)
+            # g_samples = g_samples if g_samples.shape == torch.Size(
+            #     [batch["n_locs_batch"], self.n_latents_spatial]) else g_samples.mean(dim=0).reshape(
+            #     batch["n_locs_batch"], self.n_latents_spatial)
+            # g_samples = g_samples[batch["batch_inverse"]]
 
-            v = pyro.param("v", torch.randn(self.n_latents_spatial, n_species))
+            # v = pyro.param("v", torch.randn(self.n_latents_spatial, n_species))
+            v_loc = torch.zeros(self.n_latents_spatial, n_species)
+            v_scale = torch.ones(self.n_latents_spatial, n_species)
+            with species_plate, pyro.plate("spatial_latents_plate_v", self.n_latents_spatial, dim=-2):
+                v = pyro.sample("v", dist.Normal(loc=v_loc, scale=v_scale))
 
-            z = z + eta_samples @ v
+            z = z + g_samples @ v
 
         with species_plate:
             bias = pyro.sample("b", dist.Normal(loc=torch.zeros(n_species), scale=torch.ones(n_species)))
 
         z = z + bias
 
-        pyro.deterministic("z", z)
-
-        with samples_plate, species_plate:
-            pyro.sample("y", dist.Bernoulli(logits=z), obs=batch.get("Y") if batch.get("training", True) else None)
+        self.likelihood(z, batch, samples_plate, species_plate)
 
     def guide(self, batch):
         n_species = batch.get("n_species")
         species_plate = pyro.plate(name="species_plate", size=n_species, dim=-1)
 
         if self.environment:
-            latents_plate = pyro.plate(name="latents_plate", size=self.n_latents_env, dim=-2)
+            # w_loc = pyro.param(
+            #     "w_loc",
+            #     torch.zeros(n_species, self.n_latents_env)
+            # )
+            #
+            # # Shape: [n_species, n_latents_env, n_latents_env]
+            # w_scale_tril = pyro.param(
+            #     "w_scale_tril",
+            #     0.1 * torch.eye(self.n_latents_env)
+            #     .expand(n_species, self.n_latents_env, self.n_latents_env)
+            #     .clone(),
+            #     constraint=dist.constraints.lower_cholesky
+            # )
+            #
+            # # -- CRITICAL PART: set dim=-1 so that species is the RIGHTMOST dimension.
+            # with species_plate:
+            #     # By default, MultivariateNormal(...):
+            #     #   - batch shape = [n_species]
+            #     #   - event shape = [n_latents_env]
+            #     #
+            #     # Placing the plate at dim=-1 forces the "event dimension" to be -2,
+            #     # so physically the sample comes out [n_latents_env, n_species].
+            #     w = pyro.sample(
+            #         "w",
+            #         dist.MultivariateNormal(w_loc, scale_tril=w_scale_tril)
+            #     )
 
-            # if self.traits:
-            #     gamma = pyro.param("gamma", torch.zeros(self.n_latents_env, n_traits))
-            #     w_loc = gamma @ batch.get("traits").T
-            # else:
+            w_loc = pyro.param("w_loc", torch.zeros(self.n_latents_env, n_species))
+            w_scale = pyro.param("w_scale", 0.1 * torch.ones(self.n_latents_env, n_species),
+                                 constraint=dist.constraints.positive)
 
-            w_loc = pyro.param(
-                "w_loc",
-                torch.zeros(n_species, self.n_latents_env)
-            )
-
-            # Shape: [n_species, n_latents_env, n_latents_env]
-            w_scale_tril = pyro.param(
-                "w_scale_tril",
-                0.1 * torch.eye(self.n_latents_env)
-                .expand(n_species, self.n_latents_env, self.n_latents_env)
-                .clone(),
-                constraint=dist.constraints.lower_cholesky
-            )
-
-            # -- CRITICAL PART: set dim=-1 so that species is the RIGHTMOST dimension.
-            with pyro.plate("species_plate-a", n_species, dim=-1):
-                # By default, MultivariateNormal(...):
-                #   - batch shape = [n_species]
-                #   - event shape = [n_latents_env]
-                #
-                # Placing the plate at dim=-1 forces the "event dimension" to be -2,
-                # so physically the sample comes out [n_latents_env, n_species].
-                w = pyro.sample(
-                    "w",
-                    dist.MultivariateNormal(w_loc, scale_tril=w_scale_tril)
-                )
-
-            # w_loc = pyro.param("w_loc", torch.zeros(n_species, self.n_latents_env))
-            # w_scale = pyro.param("w_scale", torch.ones(n_species, self.n_latents_env), constraint=dist.constraints.positive)
-
-            # with pyro.plate("species_plate-a", size=n_species, dim=-1):
-            #     w = pyro.sample("w",
-            #                     dist.Normal(loc=w_loc,
-            #                                 scale=w_scale).to_event(1))
+            with species_plate, pyro.plate("env_latents_plate_w", self.n_latents_env, dim=-2):
+                w = pyro.sample("w", dist.Normal(loc=w_loc, scale=w_scale))
 
             # pyro.module(self.name_prefixes[i], self.gp_models[i])
             f_dist = self.f.pyro_guide(batch.get("X"), name_prefix="f_GP")
             # Use a plate here to mark conditional independencies
-            with pyro.plate(".data_plate", dim=-1):
+            with pyro.plate("L_plate", dim=-1):
                 # Sample from latent function distribution
                 f_samples = pyro.sample(".f(x)", f_dist)
 
         if self.spatial:
-            eta_dist = self.eta.pyro_guide(batch.get("coords"), name_prefix="eta_GP")  # TODO: BREAKER
+            g_dist = self.g.pyro_guide(batch.get("coords"), name_prefix="g_GP")  # TODO: BREAKER
             # Use a plate here to mark conditional independencies
-            with pyro.plate(".eta_data_plate", dim=-1):
+            with pyro.plate("M_plate", dim=-1):
                 # Sample from latent function distribution
-                eta_samples = pyro.sample(".eta(coords)", eta_dist)
+                g_samples = pyro.sample(".g(coords)", g_dist)
+
+            v_loc = pyro.param("v_loc", torch.zeros(self.n_latents_spatial, n_species))
+            v_scale = pyro.param(
+                "v_scale",
+                0.1 * torch.ones(self.n_latents_spatial, n_species),
+                constraint=dist.constraints.positive
+            )
+
+            with species_plate, pyro.plate("spatial_latents_plate_v", self.n_latents_spatial, dim=-2):
+                v = pyro.sample("v", dist.Normal(loc=v_loc, scale=v_scale))
 
         # if self.traits:
         #     bias_loc = pyro.param("bias_loc", torch.zeros(n_species))
@@ -192,8 +196,31 @@ class EcoGP(pyro.nn.PyroModule):
         with species_plate:
             bias = pyro.sample("b", dist.Normal(loc=bias_loc, scale=bias_scale))
 
-    def forward(self, x):
-        ...
+    def forward(self, batch):
+        # Point prediction
+        z = 0
+
+        if self.environment:
+            f_samples = self.f.pyro_guide(batch.get("X"), name_prefix="f_GP").mean
+            w = pyro.param("w_loc")
+
+            z = z + f_samples @ w
+
+        if self.spatial:
+            g_samples = self.g.pyro_guide(batch.get("coords"), name_prefix="g_GP").mean
+            v = pyro.param("v_loc")
+
+            z = z + g_samples @ v
+
+        bias = pyro.param("bias_loc")
+
+        z = z + bias
+
+        if isinstance(self.likelihood, type(BernoulliLikelihood)):
+            return dist.Bernoulli(logits=z).mean
+
+        if isinstance(self.likelihood, type(DirichletMultinomialLikelihood)):
+            return dist.Dirichlet(concentration=z).mean
 
 
 class EnvironmentGP(gpytorch.models.ApproximateGP):
@@ -217,17 +244,11 @@ class EnvironmentGP(gpytorch.models.ApproximateGP):
         super().__init__(variational_strategy)
 
         # The mean and covariance modules should be marked as batch, so we learn a different set of hyperparameters
-        # self.mean_module = gpytorch.means.ConstantMean(prior=gpytorch.priors.NormalPrior(loc=-5, scale=1), batch_shape=torch.Size([n_latents]))
         self.mean_module = gpytorch.means.ZeroMean(batch_shape=torch.Size([n_latents]))
-        # self.mean_module = gpytorch.means.LinearMean(input_size=n_variables, batch_shape=torch.Size([n_latents]))
-        self.covar_module = gpytorch.kernels.ScaleKernel(
-            gpytorch.kernels.RBFKernel(
-                lengthscale_prior=gpytorch.priors.NormalPrior(loc=5, scale=10),
-                batch_shape=torch.Size([n_latents]),
-                ard_num_dims=n_variables,
-            ),
-            outputscale_prior=gpytorch.priors.GammaPrior(rate=1, concentration=5),
-            batch_shape=torch.Size([n_latents])
+        self.covar_module = gpytorch.kernels.RBFKernel(
+            lengthscale_prior=gpytorch.priors.GammaPrior(rate=1, concentration=5),
+            batch_shape=torch.Size([n_latents]),
+            ard_num_dims=n_variables,
         )
 
         # self.covar_module.base_kernel.lengthscale = torch.rand(n_latents, 1, n_variables)
@@ -293,21 +314,18 @@ class SpatialGP(gpytorch.models.ApproximateGP):
 
         variational_strategy = MultitaskVariationalStrategy(  # CustomVariationalStrategy
             base_variational_strategy=gpytorch.variational.VariationalStrategy(
-                self, inducing_points, variational_distribution, learn_inducing_locations=True
+                self, inducing_points, variational_distribution, learn_inducing_locations=False
             ),
         )
 
         super().__init__(variational_strategy)
 
         # The mean and covariance modules should be marked as batch, so we learn a different set of hyperparameters
-        self.mean_module = gpytorch.means.ConstantMean(batch_shape=torch.Size([n_latents]))
-        self.covar_module = gpytorch.kernels.ScaleKernel(
-            gpytorch.kernels.RBFKernel(#HaversineRBFKernel(  # gpytorch.kernels.RBFKernel(#HaversineRBFKernel(  # CustomSpatialKernel(#
-                lengthscale_prior=gpytorch.priors.NormalPrior(loc=5, scale=25),
-                batch_shape=torch.Size([n_latents]),
-            ),
-            outputscale_prior=gpytorch.priors.GammaPrior(rate=1, concentration=1),
-            batch_shape=torch.Size([n_latents])
+        self.mean_module = gpytorch.means.ZeroMean(batch_shape=torch.Size([n_latents]))
+        self.covar_module = gpytorch.kernels.RBFKernel(
+            # HaversineRBFKernel(  # gpytorch.kernels.RBFKernel(#HaversineRBFKernel(  # CustomSpatialKernel(#
+            lengthscale_prior=gpytorch.priors.GammaPrior(rate=1, concentration=5),
+            batch_shape=torch.Size([n_latents]),
         )
         # self.covar_module.base_kernel.lengthscale = torch.rand(n_latents, 1, 1) * 5
         # self.covar_module.base_kernel.lengthscale = torch.ones(n_latents, 1, 1, requires_grad=False) * 3
@@ -319,4 +337,5 @@ class SpatialGP(gpytorch.models.ApproximateGP):
         mean_x = self.mean_module(x)
         covar_x = self.covar_module(x)
         return gpytorch.distributions.MultivariateNormal(mean_x, covar_x)
+
 

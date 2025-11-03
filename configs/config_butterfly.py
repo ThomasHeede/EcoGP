@@ -2,6 +2,8 @@ import os
 import torch
 
 from configs.data_folder_path import data_folder_path
+from models.likelihoods import DirichletMultinomialLikelihood, BernoulliLikelihood
+
 
 config = {
     "data": {
@@ -10,17 +12,19 @@ config = {
         "coords_path": os.path.join(data_folder_path, "butterfly/XY_val.csv"),
         "traits_path": os.path.join(data_folder_path, "butterfly/traits.csv"),
         "normalize_X": True,
-        "prevalence_threshold": 0.0
+        "presence_absence": True
     },
     "general": {
+        "likelihood": BernoulliLikelihood,
         "n_iter": 100,
         "n_particles": 1,
         "lr": 0.01,
         "batch_size": 512,
-        "train_pct": 0.8,
+        "split_pct": [0.7, 0.2, 0.1],  # Train/Test/Val
         "device": torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu"),
         "verbose": True,
-        "save_model_path": "../results/saved_models/",
+        "save_model_path": os.path.join(data_folder_path, "../results/butterfly/"),
+        "seed": 0,
     },
     "environmental": {
         "n_latents": 10,
