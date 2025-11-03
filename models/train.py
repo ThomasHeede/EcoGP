@@ -1,7 +1,6 @@
 import torch
 import pyro
 import pyro.distributions as dist
-import gpytorch
 import matplotlib.pyplot as plt
 import plotly.graph_objects as go
 import tqdm
@@ -10,24 +9,57 @@ import wandb
 import sys
 import os
 
-# Add the parent directory (or any other directory where the config module is located) to the Python path
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-# print(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
-# print(os.path.dirname(__file__))
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from EcoGP import EcoGP
+from models.EcoGP import EcoGP
 
+from torch.utils.data import DataLoader, random_split
+from models.DataSampler import DataSampler
+from models.DataLoad import DataLoad
+from models.BetaTraceELBO import BetaTraceELBO
+
+from sklearn import metrics
 
 if __name__ == "__main__":
-    # LOAD DATA
-    from torch.utils.data import DataLoader, random_split
-    from DataSampler import DataSampler
+    import importlib
+    import argparse
 
-    from misc.calculate_metrics import calculate_metrics, precision_at_k
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--config",
+        type=str,
+        default="config_butterfly",  # TODO: Change config here or when running in terminal
+        help="Name of the config file (without .py extension, must be in configs/)",
+    )
 
-    from sklearn import metrics
+    # To override arguments from config
+    parser.add_argument('--n_latents_env', type=int)
+    parser.add_argument('--n_inducing_points_env', type=int)
+    parser.add_argument('--n_latents_spatial', type=int)
+    parser.add_argument('--n_inducing_points_spatial', type=int)
+    parser.add_argument('--save_model_path', type=str)
+    parser.add_argument('--seed', type=int)
 
-    from configs.config_central_park import config  # Import the config module
+    args = parser.parse_args()
+
+    print(f"Config File: {args.config}")
+
+    config_module = importlib.import_module(f"configs.{args.config}")
+    config = config_module.config  # Import the config module
+
+    # Overrides config
+    if args.n_latents_env:
+        config["environmental"]["n_latents"] = args.n_latents_env
+    if args.n_inducing_points_env:
+        config["environmental"]["n_inducing_points"] = args.n_inducing_points_env
+    if args.n_latents_spatial:
+        config["spatial"]["n_latents"] = args.n_latents_spatial
+    if args.n_inducing_points_spatial:
+        config["spatial"]["n_inducing_points"] = args.n_inducing_points_spatial
+    if args.save_model_path:
+        config["general"]["save_model_path"] = args.save_model_path
+    if args.seed is not None:
+        config["general"]["seed"] = args.seed
 
     # ARGUMENTS
     environment = config["additive"]["environment"]
@@ -38,6 +70,8 @@ if __name__ == "__main__":
     y_path = config["data"]["Y_path"]
     coords_path = config["data"]["coords_path"]
     traits_path = config["data"]["traits_path"]
+    # total_counts_path = config["data"]["total_counts_path"]
+    #hierarchy_path = config["data"]["hierarchy_path"]
 
     n_latents_env = config["environmental"]["n_latents"]
     n_latents_spatial = config["spatial"]["n_latents"]
@@ -46,53 +80,70 @@ if __name__ == "__main__":
     device = config["general"]["device"]
     lr = config["general"]["lr"]
     batch_size = config["general"]["batch_size"]
-    train_pct = config["general"]["train_pct"]
+    split_pct = config["general"]["split_pct"]
     n_inducing_points_env = config["environmental"]["n_inducing_points"]
     n_inducing_points_spatial = config["spatial"]["n_inducing_points"]
 
-    prevalence_threshold = config["data"]["prevalence_threshold"]
+    verbose = config["general"]["verbose"]
+    presence_absence = config["data"]["presence_absence"]
+    normalize_X = config["data"]["normalize_X"]
+    likelihood = config["general"]["likelihood"]
+    seed = config["general"]["seed"]
+
+    # prevalence_threshold = config["data"]["prevalence_threshold"]
 
     save_model_path = config["general"]["save_model_path"]
     # STOP ARGUMENTS
 
-    dataset = DataSampler(
+    torch.manual_seed(seed)
+
+    data = DataLoad(
         Y_path=y_path,
         X_path=x_path,
         coords_path=coords_path,
         traits_path=traits_path,
         device=device,
-        normalize_X=True,
-        prevalence_threshold=prevalence_threshold)
+        normalize_X=normalize_X,
+        #total_counts_path=total_counts_path,
+        presence_absence_Y=presence_absence,
+        verbose=verbose
+    )
+
+    dataset = DataSampler(data)
 
     if spatial:
-        train_indices, test_indices = random_split(torch.arange(dataset.unique_coords.shape[0]),
-                                                   [train_pct, 1 - train_pct],
-                                                   generator=torch.Generator().manual_seed(42))
+        train_indices, test_indices, validation_indices = random_split(torch.arange(dataset.unique_coords.shape[0]),
+                                                                       split_pct,
+                                                                       generator=torch.Generator().manual_seed(seed))
 
         # Getting the spatial locations split into separate sets
         train_indices = dataset.coords_inverse_indicies[
             torch.isin(dataset.coords_inverse_indicies, torch.tensor(train_indices.indices))]
         test_indices = dataset.coords_inverse_indicies[
             torch.isin(dataset.coords_inverse_indicies, torch.tensor(test_indices.indices))]
+        validation_indices = dataset.coords_inverse_indicies[
+            torch.isin(dataset.coords_inverse_indicies, torch.tensor(validation_indices.indices))]
 
         train_dataset = torch.utils.data.Subset(dataset, train_indices)
         test_dataset = torch.utils.data.Subset(dataset, test_indices)
+        validation_dataset = torch.utils.data.Subset(dataset, validation_indices)
     else:
-        # dataloader = DataLoader(dataset=dataset, batch_size=_batch_size, shuffle=True)
-        train_size = int(train_pct * len(dataset))
-        test_size = len(dataset) - train_size
+        train_dataset, test_dataset, validation_dataset = random_split(dataset, split_pct,
+                                                                       generator=torch.Generator().manual_seed(seed))
 
-        train_dataset, test_dataset = random_split(dataset, [train_size, test_size],
-                                                   generator=torch.Generator().manual_seed(42))
-
-    # Make sure at least 10 species obserservations are present in each subset of the data
-    keep_y = (dataset.Y[train_dataset.indices].sum(dim=0) >= 10) & (
-                dataset.Y[test_dataset.indices].sum(dim=0) >= 10)
+    # Make sure at least 1 species obserservations are present all splits
+    # Can't make predictions for a species not present in training
+    keep_y = (dataset.Y[train_dataset.indices].sum(dim=0) >= split_pct[0] * 10) & (
+                dataset.Y[test_dataset.indices].sum(dim=0) >= split_pct[1] * 10) & (
+                dataset.Y[validation_dataset.indices].sum(dim=0) >= split_pct[2] * 10)
     dataset.Y = dataset.Y[:, keep_y]
-    dataset.Y_cols_species = dataset.Y_cols_species[keep_y]
+    dataset.taxon_names = dataset.taxon_names[keep_y]
     dataset.n_species = dataset.Y.shape[1]
     if traits_path:
         dataset.traits = dataset.traits[keep_y, :]
+    if verbose:
+        print(f"Keeping {keep_y.sum().item()} taxons with at least {split_pct} * 10 "
+              f"observations per split, respectively.")
 
     train_dataloader = DataLoader(dataset=train_dataset, batch_size=batch_size, shuffle=True)
 
@@ -111,13 +162,12 @@ if __name__ == "__main__":
         unique_coordinates,
         environment=environment,
         spatial=spatial,
-        traits=traits
+        traits=traits,
+        likelihood=likelihood
     ).to(device)
 
     optimizer = pyro.optim.Adam({"lr": lr})
     # elbo = pyro.infer.Trace_ELBO(num_particles=n_particles, vectorize_particles=True, retain_graph=True)
-
-    from models.BetaTraceELBO import BetaTraceELBO
 
     elbo = BetaTraceELBO(beta=.5, num_particles=n_particles, vectorize_particles=True, retain_graph=True)
 
@@ -143,35 +193,65 @@ if __name__ == "__main__":
     # Save model
     if save_model_path:
         torch.save(model, os.path.join(save_model_path, "model.pt"))
-        pyro.get_param_store().save(os.path.join(save_model_path, "param_store.pt"))# f"../results/saved_models/param_store.pt"
+        pyro.get_param_store().save(os.path.join(save_model_path, "param_store.pt"))
         torch.save(dataset, os.path.join(save_model_path, "dataset.pt"))
 
-    test_dataloader = DataLoader(dataset=test_dataset, batch_size=batch_size, shuffle=True)
+        # Save config
+        import pprint
 
-    y_prob_list = []
+        with open(os.path.join(save_model_path, 'config.txt'), 'w') as f:
+            # Create a PrettyPrinter object that writes to the file
+            pp = pprint.PrettyPrinter(stream=f)
+            pp.pprint(config)
+
+        # Testing
+        test_dataloader = DataLoader(dataset=test_dataset,
+                                     batch_size=batch_size,
+                                     shuffle=True)
+
+    prob_list = []
     y_test_list = []
     for idx in test_dataloader:
         batch = test_dataset.dataset.get_batch_data(idx)
-        batch["training"] = False
-        batch["do_spatial"] = True
+        res = model.forward(batch).detach()
 
-        predictive = pyro.infer.Predictive(model.model, guide=model.guide, num_samples=50)
-        y_prob = predictive(batch)["y"].mean(dim=0)
-        y_prob_list.append(y_prob)
+        prob_list.append(res)
+        y_test_list.append(batch.get("Y") / (dataset.total_counts[idx] if dataset.using_total_counts else 1))
 
-        y_test_list.append(batch.get("Y"))
-
-    y_prob = torch.concat(y_prob_list)
+    prob = torch.concat(prob_list)
     test_Y = torch.concat(y_test_list)
-    del y_prob_list, y_test_list
+    del prob_list, y_test_list
 
     if save_model_path:
         import pandas as pd
 
-        pd.DataFrame(y_prob, columns=dataset.Y_cols_species, index=dataset.Y_idx_sites.to_numpy().reshape(-1)[test_dataset.indices]).to_csv(os.path.join(save_model_path, "Y_pred.csv"))
-        pd.DataFrame(test_Y, columns=dataset.Y_cols_species, index=dataset.Y_idx_sites.to_numpy().reshape(-1)[test_dataset.indices]).to_csv(os.path.join(save_model_path, "Y_true.csv"))
+        pd.DataFrame(prob, columns=dataset.taxon_names, index=dataset.site_names[test_dataset.indices]).to_csv(os.path.join(save_model_path, "Y_pred.csv"))
+        pd.DataFrame(test_Y, columns=dataset.taxon_names, index=dataset.site_names[test_dataset.indices]).to_csv(os.path.join(save_model_path, "Y_true.csv"))
 
-    metric_results = calculate_metrics(test_Y, y_prob)
+    from models.misc.calculate_metrics_fast import calculate_metrics
 
-    print(metric_results)
+    metrics = calculate_metrics(test_Y, prob)
+    print(metrics)
+
+    # # Validation
+    # validation_dataloader = DataLoader(dataset=validation_dataset,
+    #                              batch_size=batch_size,
+    #                              shuffle=True)
+    #
+    # prob_list = []
+    # y_validation_list = []
+    # for idx in validation_dataloader:
+    #     batch = test_dataset.dataset.get_batch_data(idx)
+    #     res = model.forward(batch).detach()
+    #
+    #     prob_list.append(res)
+    #     y_validation_list.append(batch.get("Y") / (dataset.total_counts[idx] if dataset.using_total_counts else 1))
+    #
+    # prob = torch.concat(prob_list)
+    # validation_Y = torch.concat(y_validation_list)
+    # del prob_list, y_validation_list
+    #
+    # torch.save(prob, os.path.join(save_model_path, "Y_pred_validation.pt"))
+    # torch.save(validation_Y, os.path.join(save_model_path, "Y_true_validation.pt"))
+
     print("Done")
