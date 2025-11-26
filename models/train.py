@@ -20,6 +20,13 @@ from models.BetaTraceELBO import BetaTraceELBO
 
 from sklearn import metrics
 
+print("PyTorch:", torch.__version__)
+print("CUDA available:", torch.cuda.is_available())
+print("CUDA devices:", torch.cuda.device_count())
+if torch.cuda.is_available():
+    print("Current device idx:", torch.cuda.current_device())
+    print("Device name:", torch.cuda.get_device_name(0))
+
 if __name__ == "__main__":
     import importlib
     import argparse
@@ -228,9 +235,17 @@ if __name__ == "__main__":
         pd.DataFrame(prob, columns=dataset.taxon_names, index=dataset.site_names[test_dataset.indices]).to_csv(os.path.join(save_model_path, "Y_pred.csv"))
         pd.DataFrame(test_Y, columns=dataset.taxon_names, index=dataset.site_names[test_dataset.indices]).to_csv(os.path.join(save_model_path, "Y_true.csv"))
 
-    from models.misc.calculate_metrics_fast import calculate_metrics
+    from models.misc.calculate_metrics import calculate_metrics
+    from models.misc.calculate_metrics import calculate_metric_averages
 
-    metrics = calculate_metrics(test_Y, prob)
+    metrics_per_species = calculate_metrics(test_Y, prob)
+    
+    if save_model_path:
+        import pandas as pd
+
+        pd.DataFrame(metrics_per_species, columns=metrics_per_species.keys(), index=dataset.taxon_names).to_csv(os.path.join(save_model_path, "metrics_per_species.csv"))
+
+    metrics = calculate_metric_averages(metrics_per_species)
     print(metrics)
 
     # # Validation

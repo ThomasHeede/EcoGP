@@ -158,7 +158,7 @@ dependencies:
   - python-tzdata=2025.2=pyhd8ed1ab_0
   - python_abi=3.13=7_cp313
   - pytorch=2.7.1=cpu_mkl_py313_hea9ba1b_100
-  - pytz=2025.2=pyhd8ed1ab_0
+  - pytz=2025.2=pyhd8ed1ab_02
   - pyyaml=6.0.2=py313h8060acc_2
   - qhull=2020.2=h434a139_5
   - qt6-main=6.9.1=h0384650_0

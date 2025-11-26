@@ -91,7 +91,11 @@ class DataLoad():
 
     def load_traits(self, traits_path):
         if self.using_traits:
-            self.traits = torch.tensor(pd.read_csv(traits_path, index_col=0).values, dtype=torch.float32)
+            #self.traits = torch.tensor(pd.read_csv(traits_path, index_col=0).values, dtype=torch.float32)
+            traits = pl.read_csv(traits_path, infer_schema_length=100_000)
+            traits = traits.select(traits.columns[1:])  # Remove species names
+            self.traits_names = np.array(traits.columns)
+            self.traits = torch.tensor(traits.to_numpy(), dtype=torch.float32)
 
             if self.normalize_X:
                 self.traits = (self.traits - self.traits.mean(dim=0)) / self.traits.std(dim=0)

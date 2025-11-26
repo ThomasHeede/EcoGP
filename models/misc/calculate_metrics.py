@@ -11,9 +11,10 @@ def calculate_metrics(y_true, y_pred):
             y_true[:, i] == 0) else float("nan") for i in
         range(y_true.shape[1])
     ]
-    auc = torch.tensor(auc_per_species)
-    auc = (auc[~torch.isnan(auc)]).mean().item()
-    res["AUC"] = auc
+    res["AUC"] = auc_per_species
+    # auc = torch.tensor(auc_per_species)
+    # auc = (auc[~torch.isnan(auc)]).mean().item()
+    # res["AUC"] = auc
 
     # NLL
     nll_per_species = [
@@ -21,9 +22,10 @@ def calculate_metrics(y_true, y_pred):
             y_true[:, i] == 0) else float("nan") for i in
         range(y_true.shape[1])
     ]
-    nll = torch.tensor(nll_per_species)
-    nll = (nll[~torch.isnan(nll)]).mean().item()
-    res["NLL"] = nll
+    res["NLL"] = nll_per_species
+    # nll = torch.tensor(nll_per_species)
+    # nll = (nll[~torch.isnan(nll)]).mean().item()
+    # res["NLL"] = nll
 
     # MAE
     mae_per_species = [
@@ -31,9 +33,10 @@ def calculate_metrics(y_true, y_pred):
             y_true[:, i] == 0) else float("nan") for i in
         range(y_true.shape[1])
     ]
-    mae = torch.tensor(mae_per_species)
-    mae = (mae[~torch.isnan(mae)]).mean().item()
-    res["MAE"] = mae
+    res["MAE"] = mae_per_species
+    # mae = torch.tensor(mae_per_species)
+    # mae = (mae[~torch.isnan(mae)]).mean().item()
+    # res["MAE"] = mae
 
     # PR AUC
     pr_auc_per_species = [
@@ -41,12 +44,33 @@ def calculate_metrics(y_true, y_pred):
             y_true[:, i] == 0) else float("nan") for i in
         range(y_true.shape[1])
     ]
-    pr_auc = torch.tensor(pr_auc_per_species)
-    pr_auc = (pr_auc[~torch.isnan(pr_auc)]).mean().item()
-    res["PR_AUC"] = pr_auc
+    res["PR_AUC"] = pr_auc_per_species
+    # pr_auc = torch.tensor(pr_auc_per_species)
+    # pr_auc = (pr_auc[~torch.isnan(pr_auc)]).mean().item()
+    # res["PR_AUC"] = pr_auc
 
     return res
 
+def calculate_metric_averages(res):
+    res_averages = {}
+
+    auc = torch.tensor(res["AUC"])
+    auc = (auc[~torch.isnan(auc)]).mean().item()
+    res_averages["AUC"] = auc
+
+    nll = torch.tensor(res["NLL"])
+    nll = (nll[~torch.isnan(nll)]).mean().item()
+    res_averages["NLL"] = nll
+
+    mae = torch.tensor(res["MAE"])
+    mae = (mae[~torch.isnan(mae)]).mean().item()
+    res_averages["MAE"] = mae
+
+    pr_auc = torch.tensor(res["PR_AUC"])
+    pr_auc = (pr_auc[~torch.isnan(pr_auc)]).mean().item()
+    res_averages["PR_AUC"] = pr_auc
+
+    return res_averages
 
 def precision_at_k(labels, preds, k, probability_threshold=0.5):
     """

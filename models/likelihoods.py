@@ -2,7 +2,7 @@ import torch
 import pyro
 import pyro.distributions as dist
 
-from models.DirichletMultinomial import DirichletMultinomial
+from DirichletMultinomial import DirichletMultinomial
 
 
 def DirichletMultinomialLikelihood(z, batch, samples_plate, species_plate):

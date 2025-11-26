@@ -7,10 +7,10 @@ from models.likelihoods import DirichletMultinomialLikelihood, BernoulliLikeliho
 
 config = {
     "data": {
-        "X_path": os.path.join(data_folder_path, "butterfly/X_val.csv"),
-        "Y_path": os.path.join(data_folder_path, "butterfly/Y_val.csv"),
-        "coords_path": os.path.join(data_folder_path, "butterfly/XY_val.csv"),
-        "traits_path": os.path.join(data_folder_path, "butterfly/traits.csv"),
+        "X_path": "/home/bio.aau.dk/wz65bi/mfd2_biogeo/submodules/EcoGP/data/butterfly/X_val.csv",
+        "Y_path": "/home/bio.aau.dk/wz65bi/mfd2_biogeo/submodules/EcoGP/data/butterfly/Y_val.csv",
+        "coords_path": "/home/bio.aau.dk/wz65bi/mfd2_biogeo/submodules/EcoGP/data/butterfly/XY_val.csv",
+        "traits_path": "/home/bio.aau.dk/wz65bi/mfd2_biogeo/submodules/EcoGP/data/butterfly/traits.csv",
         "normalize_X": True,
         "presence_absence": True
     },
@@ -23,7 +23,7 @@ config = {
         "split_pct": [0.7, 0.2, 0.1],  # Train/Test/Val
         "device": torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu"),
         "verbose": True,
-        "save_model_path": os.path.join(data_folder_path, "../results/butterfly/"),
+        "save_model_path": "/home/bio.aau.dk/wz65bi/mfd2_biogeo/analysis/butterfly/",
         "seed": 0,
     },
     "environmental": {
@@ -42,6 +42,6 @@ config = {
     "additive": {  # To specify if certain components should be included or omitted.
         "environment": True,
         "spatial": True,
-        "traits": False,
+        "traits": True,
     }
 }
