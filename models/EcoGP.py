@@ -28,7 +28,10 @@ class EcoGP(pyro.nn.PyroModule):
                  likelihood=None):
         super().__init__()
 
-        self.likelihood = likelihood
+        if likelihood == "Bernoulli":
+            self.likelihood = BernoulliLikelihood
+        elif likelihood == "Dirichlet":
+            self.likelihood = DirichletMultinomialLikelihood
 
         self.environment = environment
         self.spatial = spatial

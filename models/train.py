@@ -31,42 +31,243 @@ if __name__ == "__main__":
     import importlib
     import argparse
 
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--config",
-        type=str,
-        default="config_butterfly",  # TODO: Change config here or when running in terminal
-        help="Name of the config file (without .py extension, must be in configs/)",
-    )
+    parser = argparse.ArgumentParser(
+        formatter_class = argparse.RawTextHelpFormatter
+        )
 
     # To override arguments from config
-    parser.add_argument('--n_latents_env', type=int)
-    parser.add_argument('--n_inducing_points_env', type=int)
-    parser.add_argument('--n_latents_spatial', type=int)
-    parser.add_argument('--n_inducing_points_spatial', type=int)
-    parser.add_argument('--save_model_path', type=str)
-    parser.add_argument('--seed', type=int)
+
+    ## Section "data" in the config
+    io_group = parser.add_argument_group("I/O options")
+    io_group.add_argument(
+        "--config",
+        type = str,
+        metavar = "</configs/my_config>",
+        default = "",  # TODO: Change config here or when running in terminal
+        help = "Name of the config file (without .py extension, must be in configs/). If you use a config file here there is no need to se the other options.\n\n",
+        )
+    io_group.add_argument(
+        '-x', '--x_mat',
+        type = str,
+        metavar = "x.csv",
+        help = "Matrix of the environmental features (.csv).\nThe columns are variables and the rows are samples. Unique IDs are expected as column names for the variables and row names for the samples.\nIts presence enables the environmental part of the model - and it is mandatory."
+        )
+    io_group.add_argument(
+        '-y', '--y_mat',
+        type = str,
+        metavar = "y.csv",
+        help = "Matrix of the taxa observations (.csv).\nThe columns are taxa and the rows are samples. Unique IDs are expected as column names for the taxa and row names for the samples."
+        )
+    io_group.add_argument(
+        '-c', '--coords',
+        type = str,
+        metavar = "coords.csv",
+        help = "Matrix of the samples' coordinates (.csv).\nThe columns are longitude and latitude, the rows are sample. The samples have unique IDs as row names\nIts presence enables the spatial part of the model."
+        )
+    io_group.add_argument(
+        '-t', '--traits',
+        type = str,
+        metavar = "traits.csv",
+        default="",
+        help = "Matrix of the traits (.csv).\nThe columns are different traits and the rows taxa. Unique trait names and taxa names are expected as column and row names.\nIts presence enables the traits inclusion in the model."
+        )
+    io_group.add_argument(
+        '--normalize_X',
+        type = bool,
+        metavar = "[True|False]",
+        help = "Does the environmental variable matrix need to be normalized? Default = True"
+        )
+    io_group.add_argument(
+        '--presence_absence',
+        type = bool,
+        metavar = "[True|False]",
+        help = "Run the analysis as Presence/Absence? Default = True."
+        )
+    io_group.add_argument(
+        '-o', '--out',
+        type = str,
+        metavar = "</out_path/>",
+        help = "Path to the output folder.\n\n"
+        )
+
+    ## Section "environmental" in the config
+    env_group = parser.add_argument_group("Environmental component of the model")
+    env_group.add_argument(
+        '--n_latents_env',
+        type = int,
+        metavar = "N",
+        help = "Number of latent variables to encode the environmental data. Default = 10.",
+        default = 10
+        )
+    env_group.add_argument(
+        '--n_inducing_points_env',
+        type = int,
+        metavar = "N",
+        help = "Number of inducing point for learning the Gaussian Processes for the envirnomental component of the model. Default = 50.",
+        default = 50
+        )
+
+    ## Section "spatial" in the config
+    coords_group = parser.add_argument_group("Spatial component of the model")
+    coords_group.add_argument(
+        '--n_latents_spatial',
+        type = int,
+        metavar = "N",
+        default = 5,
+        help = "Number of latent variables to encode the spatial data. Default = 5."
+        )
+    coords_group.add_argument(
+        '--n_inducing_points_spatial',
+        type = int,
+        metavar = "N",
+        default = 50,
+        help = "Number of inducing point for learning the Gaussian Processes for the spatial component of the model. Default = 50.")
+
+    ## Section "general" in the config
+    mod_group = parser.add_argument_group("Model options")
+    mod_group.add_argument(
+        '--likelihood',
+        type = str,
+        metavar = "[Dirichlet|Bernoulli]",
+        default = "Bernoulli",
+        help = "Choose the Likelihood: either Dirichlet (Multinomial) or Bernoulli. Default = Bernoulli.\n\n"
+        )
+    mod_group.add_argument(
+        '--n_iter',
+        type = int,
+        metavar = "N",
+        default = 500,
+        help = "Number of iterations during training. Default = 500.\n\n"
+        )
+    mod_group.add_argument(
+        '--n_particles',
+        type = int,
+        metavar = "N",
+        default = 1,
+        help = "Number of particles during training. Default = 1.\n\n"
+        )
+    mod_group.add_argument(
+        '--lr',
+        type = float,
+        metavar = "N",
+        default = 0.005,
+        help = "Learning rate during training. The model can be very sensitive to this parameter and even crash for some values of the learnign rate. Default = 0.005.\n\n"
+        )
+    mod_group.add_argument(
+        '--batch_size',
+        type = int,
+        metavar = "N",
+        default = 512,
+        help = "Number of data points processed together to infer the Gaussian Processes. Default = 512.\n\n"
+        )
+    mod_group.add_argument(
+        "--split_pct",
+        nargs = 3,
+        type = float,
+        metavar=("N1", "N2", "N3"),
+        help = "Fractions of the data to be used for training (N1), testing (N2) and validation (N3) of the model. Default = 0.7 0.2 0.1.\n\n",
+        )
+
+    other_group = parser.add_argument_group("Other options")
+    other_group.add_argument('--seed',
+        type = int,
+        metavar = "N",
+        default = 123,
+        help = "Set a seed to make the runs reproducible.\n\n"
+        )
+    other_group.add_argument(
+        '--device',
+        type = str,
+        metavar = "[cpu|cuda]",
+        default = "cpu",
+        help = "Device to work, i.e., specify cuda if available. Defualt = cpu.\n\n"
+        )
+    other_group.add_argument(
+        '--verbose',
+        type = bool,
+        metavar = "[True|False]",
+        default = True,
+        help = "Setting verbose mode on or off. Defualt = True.\n\n"
+        )
 
     args = parser.parse_args()
 
-    print(f"Config File: {args.config}")
+    if args.config:
+        print(f"Config File: {args.config}")
 
-    config_module = importlib.import_module(f"configs.{args.config}")
-    config = config_module.config  # Import the config module
+        config_module = importlib.import_module(f"configs.{args.config}")
+        config = config_module.config  # Import the config module
+    else:
+        config = {}
 
     # Overrides config
+    ## Section "addictive" in the config, inferred by the presence of the "data" section flags in the CLI
+    if args.x_mat:
+        config["additive"] = {}
+        config["additive"]["environment"] = True
+    if args.coords:
+        config["additive"]["spatial"] = True
+    else:
+        config["additive"]["spatial"] = False
+    if args.traits:
+        config["additive"]["traits"] = True
+    else:
+        config["additive"]["traits"] = False
+    
+    ## Section "data" in the config
+    if args.x_mat:
+        config["data"] = {}
+        config["data"]["X_path"] = args.x_mat
+    if args.y_mat:
+        config["data"]["Y_path"] = args.y_mat
+    if args.coords:
+        config["data"]["coords_path"] = args.coords
+    if args.traits:
+        config["data"]["traits_path"] = args.traits
+    if args.normalize_X:
+        config["data"]["normalize_X"] = args.normalize_X
+    if args.presence_absence:
+        config["data"]["presence_absence"] = args.presence_absence
+
+    ## Section "environmental" in the config
     if args.n_latents_env:
+        config["environmental"] = {}
         config["environmental"]["n_latents"] = args.n_latents_env
     if args.n_inducing_points_env:
         config["environmental"]["n_inducing_points"] = args.n_inducing_points_env
+
+    ## Section "spatial" in the config
     if args.n_latents_spatial:
+        config["spatial"] = {}
         config["spatial"]["n_latents"] = args.n_latents_spatial
     if args.n_inducing_points_spatial:
         config["spatial"]["n_inducing_points"] = args.n_inducing_points_spatial
-    if args.save_model_path:
-        config["general"]["save_model_path"] = args.save_model_path
+
+    ## Section "general" in the config
+    if any([args.seed, args.out, args.verbose, args.likelihood, args.n_iter, args.n_particles, args.lr, args.batch_size, args.split_pct]):
+        config["general"] = {}
     if args.seed is not None:
         config["general"]["seed"] = args.seed
+    if args.out:
+        config["general"]["save_model_path"] = args.out
+    if args.verbose:
+        config["general"]["verbose"] = args.verbose
+    if args.likelihood:
+        config["general"]["likelihood"] = args.likelihood
+    if args.n_iter:
+        config["general"]["n_iter"] = args.n_iter
+    if args.n_particles:
+        config["general"]["n_particles"] = args.n_particles
+    if args.lr:
+        config["general"]["lr"] = args.lr
+    if args.batch_size:
+        config["general"]["batch_size"] = args.batch_size
+    if args.split_pct:
+        config["general"]["split_pct"] = args.split_pct
+    if args.device:
+        config["general"]["device"] = args.device
+    
+    
 
     # ARGUMENTS
     environment = config["additive"]["environment"]
@@ -76,7 +277,10 @@ if __name__ == "__main__":
     x_path = config["data"]["X_path"]
     y_path = config["data"]["Y_path"]
     coords_path = config["data"]["coords_path"]
-    traits_path = config["data"]["traits_path"]
+    if "traits_path" in config["data"]:
+        traits_path = config["data"]["traits_path"]
+    else:
+            traits_path = ""
     # total_counts_path = config["data"]["total_counts_path"]
     #hierarchy_path = config["data"]["hierarchy_path"]
 
@@ -243,7 +447,7 @@ if __name__ == "__main__":
     if save_model_path:
         import pandas as pd
 
-        pd.DataFrame(metrics_per_species, columns=metrics_per_species.keys(), index=dataset.taxon_names).to_csv(os.path.join(save_model_path, "metrics_per_species.csv"))
+        pd.DataFrame(metrics_per_species, columns=metrics_per_species.keys(), index=dataset.taxon_names).to_csv(os.path.join(save_model_path, "metrics_per_taxon.csv"))
 
     metrics = calculate_metric_averages(metrics_per_species)
     print(metrics)

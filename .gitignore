@@ -1,6 +1,8 @@
 # Config for projects
 configs/config_mfd2_public_noNAs.py
 
+# Dev
+models/env_dim_screener.py
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

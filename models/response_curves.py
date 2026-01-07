@@ -124,7 +124,7 @@ def _worker_run_one(args):
 
     # Flatten to long form: rows = n_values * n_species
     df_one = pd.DataFrame({
-        "variable_idx": np.repeat(dataset.env_names[var_idx], len(x_np) * len(species)),
+        "variable_idx": np.repeat(dataset.env_names_continuous[var_idx], len(x_np) * len(species)),
         "x_value":      np.repeat(x_np, len(species)),
         "species":      np.tile(species, len(x_np)),
         "mean":         mean_np.reshape(-1),
@@ -212,17 +212,17 @@ if __name__ == "__main__":
         # Pick a sensible number of processes (tune for your node)
         n_procs = min(len(variable_idxs), max(1, mp.cpu_count() // 2))
 
-        args_iterable = [
-            (vidx, n_samples, n_values, iter_range, save_model_path)
-            for vidx in variable_idxs
-        ]
+        # args_iterable = [
+        #     (vidx, n_samples, n_values, iter_range, save_model_path)
+        #     for vidx in variable_idxs
+        # ]
 
-        with mp.Pool(processes=n_procs) as pool:
-            for vidx_done in pool.imap_unordered(_worker_run_one, args_iterable):
-                print(f"[OK] variable_idx") #={vidx_done}")
+        # with mp.Pool(processes=n_procs) as pool:
+        #     for vidx_done in pool.imap_unordered(_worker_run_one, args_iterable):
+        #         print(f"[OK] variable_idx") #={vidx_done}")
             
-            dfs = list(pool.imap_unordered(_worker_run_one, args_iterable))  # worker returns df_one
-            pd.concat(dfs, ignore_index=True).to_csv(os.path.join(save_model_path, "responses_all_vars.csv"), index=False)
+        #     dfs = list(pool.imap_unordered(_worker_run_one, args_iterable))  # worker returns df_one
+        #     pd.concat(dfs, ignore_index=True).to_csv(os.path.join(save_model_path, "responses_all_vars.csv"), index=False)
 
 
         print("All variable_idx jobs finished.")

@@ -64,6 +64,7 @@ class DataLoad():
     def load_X(self, X_path):
         X = pd.read_csv(X_path, index_col=0)
         self.env_names = np.array(X.columns.tolist())
+        #self.env_names_continuous = np.array(X.X_continuous.columns.tolist())
         self.site_names = np.array(X.index.tolist())
         self.X = torch.tensor(X.values, dtype=torch.float32)
 
