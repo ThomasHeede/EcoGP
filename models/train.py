@@ -310,7 +310,7 @@ def train(inputs: Inputs):
     torch.save(prob, os.path.join(inputs.save_model_path, "Y_pred_validation.pt"))
     torch.save(validation_Y, os.path.join(inputs.save_model_path, "Y_true_validation.pt"))
 
-    from EcoGP.misc.calculate_metrics_fast import calculate_metrics
+    from models.misc.calculate_metrics_fast import calculate_metrics
 
     metrics = calculate_metrics(validation_Y, prob)
     print("Validation", metrics)
@@ -335,8 +335,6 @@ def train(inputs: Inputs):
 
     torch.save(prob, os.path.join(inputs.save_model_path, "Y_pred_test.pt"))
     torch.save(test_Y, os.path.join(inputs.save_model_path, "Y_true_test.pt"))
-
-    from EcoGP.misc.calculate_metrics_fast import calculate_metrics
 
     metrics = calculate_metrics(test_Y, prob)
     print("Test", metrics)
