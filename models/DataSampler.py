@@ -17,62 +17,17 @@ class DataSampler(Dataset):
         return idx
 
     def get_batch_data(self, idx):
-        batch = {
-            # Metadata
-            "device": self.device,
-            "n_samples_total": self.n_samples,
-            "n_samples_batch": len(idx),
-            "n_species": self.n_species,
-            "n_env": self.n_env,
-            # Data
-            "X": self.get_X(idx).to(self.device),
-            "Y": self.get_Y(idx).to(self.device),
-        }
-        # if self.using_coordinates:
-        #     unique_locs_idx, reverse = self.get_dist_idx_reverse(idx)
-        #     # Data
-        #     batch.update({
-        #         "coords": self.coords[unique_locs_idx].to(self.device)
-        #     })
-        #     # Metadata
-        #     batch.update({
-        #         "n_locs_batch": batch.get("coords").shape[0],
-        #         "unique_batch_locs": unique_locs_idx,
-        #         "batch_inverse": reverse,
-        #     })
-        if self.using_coordinates:
-            # Data
-            batch.update({
-                "coords": self.coords[idx].to(self.device)
-            })
+        """
+        Returning data for batch indices
+        :param idx: list of integers for indices
+        :return: Target data if available
+        """
+        X = self.X[idx].to(self.device) if self.X is not None else None
+        Y = self.Y[idx].to(self.device) if self.Y is not None else None
+        coords = self.coords[idx].to(self.device) if self.coords is not None else None
+        traits = self.traits.to(self.device) if self.traits is not None else None
 
-        if self.using_traits:
-            batch.update({"traits": self.traits.to(self.device)})
-            batch.update({
-                "n_traits": batch.get("traits").shape[1],
-            })
-
-        return batch
-
-    def get_dist_batch(self, idx):
-        return self.coords_inverse_indicies[idx]
-
-    def get_dist_idx_reverse(self, idx):
-        batch = self.get_dist_batch(idx)
-        unique, reverse = torch.unique(batch, dim=0, return_inverse=True)
-        return unique, reverse
-
-    def get_X(self, idx=None):
-        if idx is None:
-            return self.X
-        else:
-            return self.X[idx].to(self.device)
-
-    def get_Y(self, idx=None):
-        if idx is None:
-            return self.Y
-        else:
-            return self.Y[idx].to(self.device)
+        return X, Y, coords, traits
 
 
 if __name__ == "__main__":

@@ -5,6 +5,8 @@ import matplotlib.pyplot as plt
 import plotly.graph_objects as go
 import tqdm
 
+import pandas as pd
+
 import wandb
 import sys
 import os
@@ -20,457 +22,328 @@ from models.BetaTraceELBO import BetaTraceELBO
 
 from sklearn import metrics
 
-print("PyTorch:", torch.__version__)
-print("CUDA available:", torch.cuda.is_available())
-print("CUDA devices:", torch.cuda.device_count())
-if torch.cuda.is_available():
-    print("Current device idx:", torch.cuda.current_device())
-    print("Device name:", torch.cuda.get_device_name(0))
+from likelihoods import DirichletMultinomialLikelihood, BernoulliLikelihood
 
-if __name__ == "__main__":
-    import importlib
-    import argparse
+import importlib
+import argparse
 
-    parser = argparse.ArgumentParser(
-        formatter_class = argparse.RawTextHelpFormatter
-        )
+class Inputs:
+    def __init__(self):
+        self.x_path = None
+        self.y_path = None
+        self.coords_path = None
+        self.traits_path = None
+        self.total_counts_path = None
 
-    # To override arguments from config
+        self.n_latents_env = None
+        self.n_latents_spatial = None
+        self.n_iter = None
+        self.n_particles = None
+        self.device = None
+        self.lr = None
+        self.batch_size = None
+        self.split_pct = None
+        self.n_inducing_points_env = None
+        self.n_inducing_points_spatial = None
 
-    ## Section "data" in the config
-    io_group = parser.add_argument_group("I/O options")
-    io_group.add_argument(
-        "--config",
-        type = str,
-        metavar = "</configs/my_config>",
-        default = "",  # TODO: Change config here or when running in terminal
-        help = "Name of the config file (without .py extension, must be in configs/). If you use a config file here there is no need to se the other options.\n\n",
-        )
-    io_group.add_argument(
-        '-x', '--x_mat',
-        type = str,
-        metavar = "x.csv",
-        help = "Matrix of the environmental features (.csv).\nThe columns are variables and the rows are samples. Unique IDs are expected as column names for the variables and row names for the samples.\nIts presence enables the environmental part of the model - and it is mandatory."
-        )
-    io_group.add_argument(
-        '-y', '--y_mat',
-        type = str,
-        metavar = "y.csv",
-        help = "Matrix of the taxa observations (.csv).\nThe columns are taxa and the rows are samples. Unique IDs are expected as column names for the taxa and row names for the samples."
-        )
-    io_group.add_argument(
-        '-c', '--coords',
-        type = str,
-        metavar = "coords.csv",
-        help = "Matrix of the samples' coordinates (.csv).\nThe columns are longitude and latitude, the rows are sample. The samples have unique IDs as row names\nIts presence enables the spatial part of the model."
-        )
-    io_group.add_argument(
-        '-t', '--traits',
-        type = str,
-        metavar = "traits.csv",
-        default="",
-        help = "Matrix of the traits (.csv).\nThe columns are different traits and the rows taxa. Unique trait names and taxa names are expected as column and row names.\nIts presence enables the traits inclusion in the model."
-        )
-    io_group.add_argument(
-        '--normalize_X',
-        type = bool,
-        metavar = "[True|False]",
-        help = "Does the environmental variable matrix need to be normalized? Default = True"
-        )
-    io_group.add_argument(
-        '--presence_absence',
-        type = bool,
-        metavar = "[True|False]",
-        help = "Run the analysis as Presence/Absence? Default = True."
-        )
-    io_group.add_argument(
-        '-o', '--out',
-        type = str,
-        metavar = "</out_path/>",
-        help = "Path to the output folder.\n\n"
+        self.verbose = None
+        self.presence_absence = None
+        self.normalize_X = None
+        self.likelihood = None
+        self.seed = None
+
+        self.save_model_path = None
+
+        self.read_args()
+
+    def read_args(self):
+        parser = argparse.ArgumentParser()
+
+        parser.add_argument(
+            "--config",
+            type=str,
+            default="config_clean_unique",  # TODO: Change config here or when running in terminal
+            help="Name of the config file (without .py extension, must be in configs/)",
         )
 
-    ## Section "environmental" in the config
-    env_group = parser.add_argument_group("Environmental component of the model")
-    env_group.add_argument(
-        '--n_latents_env',
-        type = int,
-        metavar = "N",
-        help = "Number of latent variables to encode the environmental data. Default = 10.",
-        default = 10
-        )
-    env_group.add_argument(
-        '--n_inducing_points_env',
-        type = int,
-        metavar = "N",
-        help = "Number of inducing point for learning the Gaussian Processes for the envirnomental component of the model. Default = 50.",
-        default = 50
-        )
+        # Settings to override arguments from config for each element
+        parser.add_argument("--x_path", type=str, help="Path to environmental covariates (X).")
+        parser.add_argument("--y_path", type=str, help="Path to species observations (Y).")
+        parser.add_argument("--coords_path", type=str, help="Path to spatial coordinates.")
+        parser.add_argument("--traits_path", type=str, help="Path to species traits.")
+        parser.add_argument("--total_counts_path", type=str, help="Path to total counts (only count data).")
 
-    ## Section "spatial" in the config
-    coords_group = parser.add_argument_group("Spatial component of the model")
-    coords_group.add_argument(
-        '--n_latents_spatial',
-        type = int,
-        metavar = "N",
-        default = 5,
-        help = "Number of latent variables to encode the spatial data. Default = 5."
-        )
-    coords_group.add_argument(
-        '--n_inducing_points_spatial',
-        type = int,
-        metavar = "N",
-        default = 50,
-        help = "Number of inducing point for learning the Gaussian Processes for the spatial component of the model. Default = 50.")
+        parser.add_argument("--n_latents_env", type=int, help="Number of environmental latent GPs.")
+        parser.add_argument("--n_latents_spatial", type=int, help="Number of spatial latent GPs.")
+        parser.add_argument("--n_iter", type=int, help="Number of training iterations.")
+        parser.add_argument("--n_particles", type=int, help="Number of particles for SVI.")
+        parser.add_argument("--device", type=str, help="Device to use for training (e.g., 'cpu' or 'cuda').")
+        parser.add_argument("--lr", type=float, help="Learning rate for the optimizer.")
+        parser.add_argument("--batch_size", type=int, help="Batch size for training.")
+        parser.add_argument("--split_pct", type=float, nargs=3, help="Train/validation/test split percentages.")
+        parser.add_argument("--n_inducing_points_env", type=int, help="Number of inducing points for environmental GPs.")
+        parser.add_argument("--n_inducing_points_spatial", type=int, help="Number of inducing points for spatial GPs.")
 
-    ## Section "general" in the config
-    mod_group = parser.add_argument_group("Model options")
-    mod_group.add_argument(
-        '--likelihood',
-        type = str,
-        metavar = "[Dirichlet|Bernoulli]",
-        default = "Bernoulli",
-        help = "Choose the Likelihood: either Dirichlet (Multinomial) or Bernoulli. Default = Bernoulli.\n\n"
-        )
-    mod_group.add_argument(
-        '--n_iter',
-        type = int,
-        metavar = "N",
-        default = 500,
-        help = "Number of iterations during training. Default = 500.\n\n"
-        )
-    mod_group.add_argument(
-        '--n_particles',
-        type = int,
-        metavar = "N",
-        default = 1,
-        help = "Number of particles during training. Default = 1.\n\n"
-        )
-    mod_group.add_argument(
-        '--lr',
-        type = float,
-        metavar = "N",
-        default = 0.005,
-        help = "Learning rate during training. The model can be very sensitive to this parameter and even crash for some values of the learnign rate. Default = 0.005.\n\n"
-        )
-    mod_group.add_argument(
-        '--batch_size',
-        type = int,
-        metavar = "N",
-        default = 512,
-        help = "Number of data points processed together to infer the Gaussian Processes. Default = 512.\n\n"
-        )
-    mod_group.add_argument(
-        "--split_pct",
-        nargs = 3,
-        type = float,
-        metavar=("N1", "N2", "N3"),
-        help = "Fractions of the data to be used for training (N1), testing (N2) and validation (N3) of the model. Default = 0.7 0.2 0.1.\n\n",
-        )
+        parser.add_argument("--verbose", type=bool, help="Enable verbose output.")
+        parser.add_argument("--presence_absence", type=bool, help="Convert relative to presence-absence data.")
+        parser.add_argument("--normalize_X", type=bool, help="Normalize features.")
+        parser.add_argument("--likelihood", type=str, help="Likelihood model to use.")
+        parser.add_argument("--seed", type=int, help="Random seed for reproducibility.")
+        parser.add_argument("--save_model_path", type=str, help="Path to save the trained model.")
 
-    other_group = parser.add_argument_group("Other options")
-    other_group.add_argument('--seed',
-        type = int,
-        metavar = "N",
-        default = 123,
-        help = "Set a seed to make the runs reproducible.\n\n"
-        )
-    other_group.add_argument(
-        '--device',
-        type = str,
-        metavar = "[cpu|cuda]",
-        default = "cpu",
-        help = "Device to work, i.e., specify cuda if available. Defualt = cpu.\n\n"
-        )
-    other_group.add_argument(
-        '--verbose',
-        type = bool,
-        metavar = "[True|False]",
-        default = True,
-        help = "Setting verbose mode on or off. Defualt = True.\n\n"
-        )
+        args = parser.parse_args()
 
-    args = parser.parse_args()
+        # Reads config file
+        self.read_config(config_file=args.config)
 
-    if args.config:
-        print(f"Config File: {args.config}")
+        # Overrides config if other arguments are provided
+        self.owerwrite_config(args=args)
 
-        config_module = importlib.import_module(f"configs.{args.config}")
+    def read_config(self, config_file: str):
+        print(f"Config File: {config_file}")
+
+        config_module = importlib.import_module(f"configs.{config_file}")
         config = config_module.config  # Import the config module
-    else:
-        config = {}
 
-    # Overrides config
-    ## Section "addictive" in the config, inferred by the presence of the "data" section flags in the CLI
-    if args.x_mat:
-        config["additive"] = {}
-        config["additive"]["environment"] = True
-    if args.coords:
-        config["additive"]["spatial"] = True
-    else:
-        config["additive"]["spatial"] = False
-    if args.traits:
-        config["additive"]["traits"] = True
-    else:
-        config["additive"]["traits"] = False
-    
-    ## Section "data" in the config
-    if args.x_mat:
-        config["data"] = {}
-        config["data"]["X_path"] = args.x_mat
-    if args.y_mat:
-        config["data"]["Y_path"] = args.y_mat
-    if args.coords:
-        config["data"]["coords_path"] = args.coords
-    if args.traits:
-        config["data"]["traits_path"] = args.traits
-    if args.normalize_X:
-        config["data"]["normalize_X"] = args.normalize_X
-    if args.presence_absence:
-        config["data"]["presence_absence"] = args.presence_absence
+        self.x_path = config["data"]["X_path"]
+        self.y_path = config["data"]["Y_path"]
+        self.coords_path = config["data"]["coords_path"]
+        self.traits_path = config["data"]["traits_path"]
+        self.total_counts_path = config["data"]["total_counts_path"]
 
-    ## Section "environmental" in the config
-    if args.n_latents_env:
-        config["environmental"] = {}
-        config["environmental"]["n_latents"] = args.n_latents_env
-    if args.n_inducing_points_env:
-        config["environmental"]["n_inducing_points"] = args.n_inducing_points_env
+        self.n_latents_env = config["environmental"]["n_latents"] if self.x_path is not None else None
+        self.n_latents_spatial = config["spatial"]["n_latents"] if self.coords_path is not None else None
+        self.n_iter = config["general"]["n_iter"]
+        self.n_particles = config["general"]["n_particles"]
+        self.device = config["general"]["device"]
+        self.lr = config["general"]["lr"]
+        self.batch_size = config["general"]["batch_size"]
+        self.split_pct = config["general"]["split_pct"]
+        self.n_inducing_points_env = config["environmental"]["n_inducing_points"]
+        self.n_inducing_points_spatial = config["spatial"]["n_inducing_points"]
 
-    ## Section "spatial" in the config
-    if args.n_latents_spatial:
-        config["spatial"] = {}
-        config["spatial"]["n_latents"] = args.n_latents_spatial
-    if args.n_inducing_points_spatial:
-        config["spatial"]["n_inducing_points"] = args.n_inducing_points_spatial
+        self.verbose = config["general"]["verbose"]
+        self.presence_absence = config["data"]["presence_absence"]
+        self.normalize_X = config["data"]["normalize_X"]
+        self.likelihood = config["general"]["likelihood"]
+        self.seed = config["general"]["seed"]
+        self.save_model_path = config["general"]["save_model_path"]
 
-    ## Section "general" in the config
-    if any([args.seed, args.out, args.verbose, args.likelihood, args.n_iter, args.n_particles, args.lr, args.batch_size, args.split_pct]):
-        config["general"] = {}
-    if args.seed is not None:
-        config["general"]["seed"] = args.seed
-    if args.out:
-        config["general"]["save_model_path"] = args.out
-    if args.verbose:
-        config["general"]["verbose"] = args.verbose
-    if args.likelihood:
-        config["general"]["likelihood"] = args.likelihood
-    if args.n_iter:
-        config["general"]["n_iter"] = args.n_iter
-    if args.n_particles:
-        config["general"]["n_particles"] = args.n_particles
-    if args.lr:
-        config["general"]["lr"] = args.lr
-    if args.batch_size:
-        config["general"]["batch_size"] = args.batch_size
-    if args.split_pct:
-        config["general"]["split_pct"] = args.split_pct
-    if args.device:
-        config["general"]["device"] = args.device
-    
-    
+        # TODO: Verify presence_absence, likelihood, and total_counts_path match. Maybe Y too.
 
-    # ARGUMENTS
-    environment = config["additive"]["environment"]
-    spatial = config["additive"]["spatial"]
-    traits = config["additive"]["traits"]
+    def owerwrite_config(self, args):
+        for attr in vars(self):
+            if hasattr(args, attr):
+                arg_value = getattr(args, attr)
+                if arg_value is None:
+                    continue
 
-    x_path = config["data"]["X_path"]
-    y_path = config["data"]["Y_path"]
-    coords_path = config["data"]["coords_path"]
-    if "traits_path" in config["data"]:
-        traits_path = config["data"]["traits_path"]
-    else:
-            traits_path = ""
-    # total_counts_path = config["data"]["total_counts_path"]
-    #hierarchy_path = config["data"]["hierarchy_path"]
+                if attr == "likelihood":
+                    if arg_value == "Bernoulli":
+                        arg_value = BernoulliLikelihood
+                    elif arg_value == "Dirichlet":
+                        arg_value = DirichletMultinomialLikelihood
+                    else:
+                        raise ValueError(f"Unknown likelihood: {arg_value}")
 
-    n_latents_env = config["environmental"]["n_latents"]
-    n_latents_spatial = config["spatial"]["n_latents"]
-    n_iter = config["general"]["n_iter"]
-    n_particles = config["general"]["n_particles"]
-    device = config["general"]["device"]
-    lr = config["general"]["lr"]
-    batch_size = config["general"]["batch_size"]
-    split_pct = config["general"]["split_pct"]
-    n_inducing_points_env = config["environmental"]["n_inducing_points"]
-    n_inducing_points_spatial = config["spatial"]["n_inducing_points"]
+                setattr(self, attr, arg_value)
 
-    verbose = config["general"]["verbose"]
-    presence_absence = config["data"]["presence_absence"]
-    normalize_X = config["data"]["normalize_X"]
-    likelihood = config["general"]["likelihood"]
-    seed = config["general"]["seed"]
 
-    # prevalence_threshold = config["data"]["prevalence_threshold"]
-
-    save_model_path = config["general"]["save_model_path"]
-    # STOP ARGUMENTS
-
-    torch.manual_seed(seed)
+def train(inputs: Inputs):
+    torch.manual_seed(inputs.seed)
 
     data = DataLoad(
-        Y_path=y_path,
-        X_path=x_path,
-        coords_path=coords_path,
-        traits_path=traits_path,
-        device=device,
-        normalize_X=normalize_X,
-        #total_counts_path=total_counts_path,
-        presence_absence_Y=presence_absence,
-        verbose=verbose
+        Y_path=inputs.y_path,
+        X_path=inputs.x_path,
+        coords_path=inputs.coords_path,
+        traits_path=inputs.traits_path,
+        device=inputs.device,
+        normalize_X=inputs.normalize_X,
+        total_counts_path=inputs.total_counts_path,
+        presence_absence_Y=inputs.presence_absence,
+        verbose=inputs.verbose
     )
 
     dataset = DataSampler(data)
 
-    if spatial:
-        train_indices, test_indices, validation_indices = random_split(torch.arange(dataset.unique_coords.shape[0]),
-                                                                       split_pct,
-                                                                       generator=torch.Generator().manual_seed(seed))
+    if inputs.coords_path:
+        train_indices, validation_indices, test_indices = random_split(torch.arange(dataset.unique_coords.shape[0]),
+                                                                       inputs.split_pct,
+                                                                       generator=torch.Generator().manual_seed(inputs.seed))
 
         # Getting the spatial locations split into separate sets
         train_indices = dataset.coords_inverse_indicies[
             torch.isin(dataset.coords_inverse_indicies, torch.tensor(train_indices.indices))]
-        test_indices = dataset.coords_inverse_indicies[
-            torch.isin(dataset.coords_inverse_indicies, torch.tensor(test_indices.indices))]
         validation_indices = dataset.coords_inverse_indicies[
             torch.isin(dataset.coords_inverse_indicies, torch.tensor(validation_indices.indices))]
+        test_indices = dataset.coords_inverse_indicies[
+            torch.isin(dataset.coords_inverse_indicies, torch.tensor(test_indices.indices))]
 
         train_dataset = torch.utils.data.Subset(dataset, train_indices)
-        test_dataset = torch.utils.data.Subset(dataset, test_indices)
         validation_dataset = torch.utils.data.Subset(dataset, validation_indices)
+        test_dataset = torch.utils.data.Subset(dataset, test_indices)
     else:
-        train_dataset, test_dataset, validation_dataset = random_split(dataset, split_pct,
-                                                                       generator=torch.Generator().manual_seed(seed))
+        train_dataset, validation_dataset, test_dataset = random_split(dataset, inputs.split_pct,
+                                                                       generator=torch.Generator().manual_seed(inputs.seed))
 
     # Make sure at least 1 species obserservations are present all splits
     # Can't make predictions for a species not present in training
-    keep_y = (dataset.Y[train_dataset.indices].sum(dim=0) >= split_pct[0] * 10) & (
-                dataset.Y[test_dataset.indices].sum(dim=0) >= split_pct[1] * 10) & (
-                dataset.Y[validation_dataset.indices].sum(dim=0) >= split_pct[2] * 10)
+    keep_y = (dataset.Y[train_dataset.indices].sum(dim=0) >= inputs.split_pct[0] * 10) & (
+            dataset.Y[validation_dataset.indices].sum(dim=0) >= inputs.split_pct[1] * 10) & (
+                     dataset.Y[test_dataset.indices].sum(dim=0) >= inputs.split_pct[2] * 10)
     dataset.Y = dataset.Y[:, keep_y]
+    if dataset.using_total_counts:
+        dataset.total_counts = (
+                    (dataset.Y / dataset.total_counts).sum(dim=1) * dataset.total_counts.squeeze()).int().reshape(-1, 1)
     dataset.taxon_names = dataset.taxon_names[keep_y]
     dataset.n_species = dataset.Y.shape[1]
-    if traits_path:
+    if inputs.traits_path:
         dataset.traits = dataset.traits[keep_y, :]
-    if verbose:
-        print(f"Keeping {keep_y.sum().item()} taxons with at least {split_pct} * 10 "
+    if inputs.verbose:
+        print(f"Keeping {keep_y.sum().item()} taxons with at least {inputs.split_pct} * 10 "
               f"observations per split, respectively.")
 
-    train_dataloader = DataLoader(dataset=train_dataset, batch_size=batch_size, shuffle=True)
+    train_dataloader = DataLoader(dataset=train_dataset, batch_size=inputs.batch_size, shuffle=True)
 
     n_tasks = dataset.n_species
     n_variables = dataset.n_env
     # n_traits = dataset.n_traits
-    unique_coordinates = dataset.unique_coords[
-        dataset.get_dist_idx_reverse(train_dataset.indices)[0]] if spatial else None
+    unique_coordinates = dataset.coords if inputs.coords_path else None
+    inputs.n_latents_spatial = inputs.n_latents_spatial if inputs.coords_path else None
 
     model = EcoGP(
-        n_latents_env,
+        inputs.n_latents_env,
         n_variables,
-        n_inducing_points_env,
-        n_latents_spatial,
-        n_inducing_points_spatial,
+        inputs.n_inducing_points_env,
+        inputs.n_latents_spatial,
+        inputs.n_inducing_points_spatial,
         unique_coordinates,
-        environment=environment,
-        spatial=spatial,
-        traits=traits,
-        likelihood=likelihood
-    ).to(device)
+        likelihood=inputs.likelihood
+    ).to(inputs.device)
 
-    optimizer = pyro.optim.Adam({"lr": lr})
+    optimizer = pyro.optim.Adam({"lr": inputs.lr})
     # elbo = pyro.infer.Trace_ELBO(num_particles=n_particles, vectorize_particles=True, retain_graph=True)
 
-    elbo = BetaTraceELBO(beta=.5, num_particles=n_particles, vectorize_particles=True, retain_graph=True)
+    elbo = BetaTraceELBO(beta=.5, num_particles=inputs.n_particles, vectorize_particles=True, retain_graph=True)
 
     svi = pyro.infer.SVI(model.model, model.guide, optimizer, elbo)
 
     model.train()
 
     losses = []
-
-    iterator = tqdm.tqdm(range(n_iter))
+    training = True
+    iterator = tqdm.tqdm(range(inputs.n_iter))
     for i in iterator:
         loss = 0
         for idx in train_dataloader:
-            batch = train_dataset.dataset.get_batch_data(idx)
-            loss += svi.step(batch) / batch.get("Y").nelement()
+            X, Y, coords, traits = train_dataset.dataset.get_batch_data(idx)
+            loss += svi.step(X, Y, coords, traits) / Y.nelement()
 
         iterator.set_postfix(loss=loss)
         losses.append(loss)
 
-    plt.plot(list(range(n_iter)), losses)
+    plt.plot(list(range(inputs.n_iter)), losses)
     plt.show()
 
     # Save model
-    if save_model_path:
-        torch.save(model, os.path.join(save_model_path, "model.pt"))
-        pyro.get_param_store().save(os.path.join(save_model_path, "param_store.pt"))
-        torch.save(dataset, os.path.join(save_model_path, "dataset.pt"))
+    if inputs.save_model_path:
+        torch.save(model, os.path.join(inputs.save_model_path, "model.pt"))
+        pyro.get_param_store().save(os.path.join(inputs.save_model_path, "param_store.pt"))
+        # torch.save(dataset, os.path.join(save_model_path, "dataset.pt"))
 
-        # Save config
-        import pprint
+        # # Save config
+        # import pprint
+        #
+        # with open(os.path.join(save_model_path, 'config.txt'), 'w') as f:
+        #     # Create a PrettyPrinter object that writes to the file
+        #     pp = pprint.PrettyPrinter(stream=f)
+        #     pp.pprint(config)
 
-        with open(os.path.join(save_model_path, 'config.txt'), 'w') as f:
-            # Create a PrettyPrinter object that writes to the file
-            pp = pprint.PrettyPrinter(stream=f)
-            pp.pprint(config)
+        # Save parameters
+        if inputs.x_path:
+            f_mean = model.f.pyro_guide(dataset.X[train_dataset.indices], name_prefix="f_GP").mean.detach().cpu().numpy()
+            pd.DataFrame(f_mean, index=dataset.site_names[train_dataset.indices]).to_csv(os.path.join(inputs.save_model_path, "environmental_latents_f.csv"))
 
-        # Testing
-        test_dataloader = DataLoader(dataset=test_dataset,
-                                     batch_size=batch_size,
-                                     shuffle=True)
+            if inputs.traits_path:
+                w_loc = (traits @ pyro.param("gamma_loc").T).T.detach().cpu().numpy()
+                pd.DataFrame(w_loc, columns=dataset.taxon_names).to_csv(os.path.join(inputs.save_model_path, "weights_traits_env_w.csv"))
+
+                gamma_loc = pyro.param("gamma_loc").detach().cpu().numpy()
+                #pd.DataFrame(gamma_loc, index=[f"Trait_{i}" for i in range(gamma_loc.shape[0])], columns=[f"Env_Latent_{i}" for i in range(gamma_loc.shape[1])]).to_csv(os.path.join(inputs.save_model_path, "gamma_loc.csv"))
+            else:
+                w_loc = pyro.param("w_loc").detach().cpu().numpy()
+                pd.DataFrame(w_loc, columns=dataset.taxon_names).to_csv(os.path.join(inputs.save_model_path, "weights_environmental_w.csv"))
+
+            if inputs.coords_path:
+                g_mean = model.g.pyro_guide(dataset.coords[train_dataset.indices],
+                                            name_prefix="g_GP").mean.detach().cpu().numpy()
+                pd.DataFrame(g_mean, index=dataset.site_names[train_dataset.indices]).to_csv(
+                    os.path.join(inputs.save_model_path, "spatial_latents_g.csv"))
+
+                v_loc = pyro.param("v_loc").detach().cpu().numpy()
+                pd.DataFrame(v_loc, columns=dataset.taxon_names).to_csv(os.path.join(inputs.save_model_path, "weights_spatial_v.csv"))
+
+            bias_loc = pyro.param("bias_loc").detach().cpu().numpy()
+            pd.DataFrame(bias_loc, index=dataset.taxon_names).to_csv(os.path.join(inputs.save_model_path, "bias_loc.csv"))
+
+
+
+
+    # Validation
+    validation_dataloader = DataLoader(dataset=validation_dataset,
+                                 batch_size=inputs.batch_size,
+                                 shuffle=True)
+
+    prob_list = []
+    y_validation_list = []
+    for idx in validation_dataloader:
+        X, Y, coords, traits = validation_dataset.dataset.get_batch_data(idx)
+        res = model.forward(X, Y, coords, traits).detach()
+
+        prob_list.append(res)
+        y_validation_list.append(Y / (dataset.total_counts[idx] if dataset.using_total_counts else 1))
+
+    prob = torch.concat(prob_list)
+    validation_Y = torch.concat(y_validation_list)
+    del prob_list, y_validation_list
+
+    torch.save(prob, os.path.join(inputs.save_model_path, "Y_pred_validation.pt"))
+    torch.save(validation_Y, os.path.join(inputs.save_model_path, "Y_true_validation.pt"))
+
+    from EcoGP.misc.calculate_metrics_fast import calculate_metrics
+
+    metrics = calculate_metrics(validation_Y, prob)
+    print("Validation", metrics)
+
+    # test
+    test_dataloader = DataLoader(dataset=test_dataset,
+                                 batch_size=inputs.batch_size,
+                                 shuffle=True)
 
     prob_list = []
     y_test_list = []
     for idx in test_dataloader:
-        batch = test_dataset.dataset.get_batch_data(idx)
-        res = model.forward(batch).detach()
+        X, Y, coords, traits = validation_dataset.dataset.get_batch_data(idx)
+        res = model.forward(X, Y, coords, traits).detach()
 
         prob_list.append(res)
-        y_test_list.append(batch.get("Y") / (dataset.total_counts[idx] if dataset.using_total_counts else 1))
+        y_test_list.append(Y / (dataset.total_counts[idx] if dataset.using_total_counts else 1))
 
     prob = torch.concat(prob_list)
     test_Y = torch.concat(y_test_list)
     del prob_list, y_test_list
 
-    if save_model_path:
-        import pandas as pd
+    torch.save(prob, os.path.join(inputs.save_model_path, "Y_pred_test.pt"))
+    torch.save(test_Y, os.path.join(inputs.save_model_path, "Y_true_test.pt"))
 
-        pd.DataFrame(prob, columns=dataset.taxon_names, index=dataset.site_names[test_dataset.indices]).to_csv(os.path.join(save_model_path, "Y_pred.csv"))
-        pd.DataFrame(test_Y, columns=dataset.taxon_names, index=dataset.site_names[test_dataset.indices]).to_csv(os.path.join(save_model_path, "Y_true.csv"))
+    from EcoGP.misc.calculate_metrics_fast import calculate_metrics
 
-    from models.misc.calculate_metrics import calculate_metrics
-    from models.misc.calculate_metrics import calculate_metric_averages
-
-    metrics_per_species = calculate_metrics(test_Y, prob)
-    
-    if save_model_path:
-        import pandas as pd
-
-        pd.DataFrame(metrics_per_species, columns=metrics_per_species.keys(), index=dataset.taxon_names).to_csv(os.path.join(save_model_path, "metrics_per_taxon.csv"))
-
-    metrics = calculate_metric_averages(metrics_per_species)
-    print(metrics)
-
-    # # Validation
-    # validation_dataloader = DataLoader(dataset=validation_dataset,
-    #                              batch_size=batch_size,
-    #                              shuffle=True)
-    #
-    # prob_list = []
-    # y_validation_list = []
-    # for idx in validation_dataloader:
-    #     batch = test_dataset.dataset.get_batch_data(idx)
-    #     res = model.forward(batch).detach()
-    #
-    #     prob_list.append(res)
-    #     y_validation_list.append(batch.get("Y") / (dataset.total_counts[idx] if dataset.using_total_counts else 1))
-    #
-    # prob = torch.concat(prob_list)
-    # validation_Y = torch.concat(y_validation_list)
-    # del prob_list, y_validation_list
-    #
-    # torch.save(prob, os.path.join(save_model_path, "Y_pred_validation.pt"))
-    # torch.save(validation_Y, os.path.join(save_model_path, "Y_true_validation.pt"))
+    metrics = calculate_metrics(test_Y, prob)
+    print("Test", metrics)
 
     print("Done")
+
+
+if __name__ == "__main__":
+    inputs = Inputs()
+    train(inputs)
