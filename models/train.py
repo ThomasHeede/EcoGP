@@ -172,12 +172,9 @@ def train(inputs: Inputs):
                                                                        generator=torch.Generator().manual_seed(inputs.seed))
 
         # Getting the spatial locations split into separate sets
-        train_indices = dataset.coords_inverse_indicies[
-            torch.isin(dataset.coords_inverse_indicies, torch.tensor(train_indices.indices))]
-        validation_indices = dataset.coords_inverse_indicies[
-            torch.isin(dataset.coords_inverse_indicies, torch.tensor(validation_indices.indices))]
-        test_indices = dataset.coords_inverse_indicies[
-            torch.isin(dataset.coords_inverse_indicies, torch.tensor(test_indices.indices))]
+        train_indices = torch.isin(dataset.coords_inverse_indicies, torch.tensor(train_indices.indices)).nonzero(as_tuple=False).squeeze()
+        validation_indices = torch.isin(dataset.coords_inverse_indicies, torch.tensor(validation_indices.indices)).nonzero(as_tuple=False).squeeze()
+        test_indices = torch.isin(dataset.coords_inverse_indicies, torch.tensor(test_indices.indices)).nonzero(as_tuple=False).squeeze()
 
         train_dataset = torch.utils.data.Subset(dataset, train_indices)
         validation_dataset = torch.utils.data.Subset(dataset, validation_indices)
