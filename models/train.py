@@ -62,7 +62,7 @@ class Inputs:
         parser.add_argument(
             "--config",
             type=str,
-            default="config_clean_unique",  # TODO: Change config here or when running in terminal
+            default="",  # TODO: Change config here or when running in terminal
             help="Name of the config file (without .py extension, must be in configs/)",
         )
 
@@ -94,7 +94,8 @@ class Inputs:
         args = parser.parse_args()
 
         # Reads config file
-        self.read_config(config_file=args.config)
+        if args.config:
+            self.read_config(config_file=args.config)
 
         # Overrides config if other arguments are provided
         self.owerwrite_config(args=args)
@@ -151,7 +152,7 @@ class Inputs:
 
 def train(inputs: Inputs):
     torch.manual_seed(inputs.seed)
-
+    torch.set_printoptions(threshold=float('inf'))
     data = DataLoad(
         Y_path=inputs.y_path,
         X_path=inputs.x_path,
@@ -170,14 +171,10 @@ def train(inputs: Inputs):
         train_indices, validation_indices, test_indices = random_split(torch.arange(dataset.unique_coords.shape[0]),
                                                                        inputs.split_pct,
                                                                        generator=torch.Generator().manual_seed(inputs.seed))
-
         # Getting the spatial locations split into separate sets
-        train_indices = dataset.coords_inverse_indicies[
-            torch.isin(dataset.coords_inverse_indicies, torch.tensor(train_indices.indices))]
-        validation_indices = dataset.coords_inverse_indicies[
-            torch.isin(dataset.coords_inverse_indicies, torch.tensor(validation_indices.indices))]
-        test_indices = dataset.coords_inverse_indicies[
-            torch.isin(dataset.coords_inverse_indicies, torch.tensor(test_indices.indices))]
+        train_indices = torch.isin(dataset.coords_inverse_indicies, torch.tensor(train_indices.indices)).nonzero(as_tuple=False).squeeze()
+        validation_indices = torch.isin(dataset.coords_inverse_indicies, torch.tensor(validation_indices.indices)).nonzero(as_tuple=False).squeeze()
+        test_indices = torch.isin(dataset.coords_inverse_indicies, torch.tensor(test_indices.indices)).nonzero(as_tuple=False).squeeze()
 
         train_dataset = torch.utils.data.Subset(dataset, train_indices)
         validation_dataset = torch.utils.data.Subset(dataset, validation_indices)
@@ -249,7 +246,7 @@ def train(inputs: Inputs):
     if inputs.save_model_path:
         torch.save(model, os.path.join(inputs.save_model_path, "model.pt"))
         pyro.get_param_store().save(os.path.join(inputs.save_model_path, "param_store.pt"))
-        # torch.save(dataset, os.path.join(save_model_path, "dataset.pt"))
+        torch.save(dataset, os.path.join(inputs.save_model_path, "dataset.pt"))
 
         # # Save config
         # import pprint
@@ -261,6 +258,8 @@ def train(inputs: Inputs):
 
         # Save parameters
         if inputs.x_path:
+            import pandas as pd
+
             f_mean = model.f.pyro_guide(dataset.X[train_dataset.indices], name_prefix="f_GP").mean.detach().cpu().numpy()
             pd.DataFrame(f_mean, index=dataset.site_names[train_dataset.indices]).to_csv(os.path.join(inputs.save_model_path, "environmental_latents_f.csv"))
 
@@ -286,7 +285,7 @@ def train(inputs: Inputs):
             bias_loc = pyro.param("bias_loc").detach().cpu().numpy()
             pd.DataFrame(bias_loc, index=dataset.taxon_names).to_csv(os.path.join(inputs.save_model_path, "bias_loc.csv"))
 
-
+    torch.set_printoptions(threshold=float('inf'))
 
 
     # Validation
@@ -309,10 +308,20 @@ def train(inputs: Inputs):
 
     torch.save(prob, os.path.join(inputs.save_model_path, "Y_pred_validation.pt"))
     torch.save(validation_Y, os.path.join(inputs.save_model_path, "Y_true_validation.pt"))
+    pd.DataFrame(prob, columns=dataset.taxon_names, index=dataset.site_names[validation_dataset.indices]).to_csv(os.path.join(inputs.save_model_path, "Y_pred_validation.csv"))
+    pd.DataFrame(validation_Y, columns=dataset.taxon_names, index=dataset.site_names[validation_dataset.indices]).to_csv(os.path.join(inputs.save_model_path, "Y_true_validation.csv"))
 
-    from models.misc.calculate_metrics_fast import calculate_metrics
+    from models.misc.calculate_metrics import calculate_metrics
+    from models.misc.calculate_metrics import calculate_metric_averages
 
-    metrics = calculate_metrics(validation_Y, prob)
+    metrics_per_species = calculate_metrics(validation_Y, prob)
+
+    if inputs.save_model_path:
+        import pandas as pd
+
+        pd.DataFrame(metrics_per_species, columns=metrics_per_species.keys(), index=dataset.taxon_names).to_csv(os.path.join(inputs.save_model_path, "metrics_per_taxon_validation.csv"))
+
+    metrics = calculate_metric_averages(metrics_per_species)
     print("Validation", metrics)
 
     # test
@@ -335,8 +344,16 @@ def train(inputs: Inputs):
 
     torch.save(prob, os.path.join(inputs.save_model_path, "Y_pred_test.pt"))
     torch.save(test_Y, os.path.join(inputs.save_model_path, "Y_true_test.pt"))
+    pd.DataFrame(prob, columns=dataset.taxon_names, index=dataset.site_names[test_dataset.indices]).to_csv(os.path.join(inputs.save_model_path, "Y_pred_test.csv"))
+    pd.DataFrame(test_Y, columns=dataset.taxon_names, index=dataset.site_names[test_dataset.indices]).to_csv(os.path.join(inputs.save_model_path, "Y_true_test.csv"))
 
-    metrics = calculate_metrics(test_Y, prob)
+    metrics_per_species = calculate_metrics(test_Y, prob)
+    if inputs.save_model_path:
+        import pandas as pd
+
+        pd.DataFrame(metrics_per_species, columns=metrics_per_species.keys(), index=dataset.taxon_names).to_csv(os.path.join(inputs.save_model_path, "metrics_per_taxon_test.csv"))
+
+    metrics = calculate_metric_averages(metrics_per_species)
     print("Test", metrics)
 
     print("Done")
@@ -344,4 +361,11 @@ def train(inputs: Inputs):
 
 if __name__ == "__main__":
     inputs = Inputs()
-    train(inputs)
+    try:
+        train(inputs)
+    except ValueError as e:
+        msg = str(e)
+        if "Expected parameter loc" in msg and "constraint Real()" in msg:
+            print("ValueError raised, probable instability of the parameters given this seed")
+        else:
+            raise

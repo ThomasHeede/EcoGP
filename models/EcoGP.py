@@ -92,7 +92,7 @@ class EcoGP(pyro.nn.PyroModule):
                 with traits_plate, latent_env_plate:
                     gamma = pyro.sample("gamma", dist.Normal(loc=torch.zeros(self.n_latents_env, n_traits),
                                                              scale=torch.ones(self.n_latents_env, n_traits)))
-                w_loc = pyro.deterministic("w_loc", (traits @ gamma.T).T)
+                w_loc = (traits @ gamma.T).T # pyro.deterministic("w_loc", (traits @ gamma.T).T)
 
                 # gamma = pyro.param("gamma", torch.randn(self.n_latents_env, n_traits))
                 # w_loc = (traits @ gamma.T).T
@@ -104,6 +104,7 @@ class EcoGP(pyro.nn.PyroModule):
             with species_plate, latent_env_plate:
                 w = pyro.sample("w", dist.Normal(loc=w_loc, scale=w_scale))
 
+            w = w.to(f_samples.device) # added because of gpu version of response curves
             z = z + f_samples @ w
 
         if self.n_latents_spatial is not None:
@@ -115,10 +116,12 @@ class EcoGP(pyro.nn.PyroModule):
                 g_samples = pyro.sample(".g(coords)", g_dist)
 
             # Correcting shape-mismatch, which may occur using particles
+            print("g_samples here:", g_samples.shape)
+            print("n_samples: ", n_samples, "; self.n_latents_spatial: ", self.n_latents_spatial)
             g_samples = g_samples if g_samples.shape == torch.Size(
                 [n_samples, self.n_latents_spatial]) else g_samples.mean(dim=0).reshape(
                 n_samples, self.n_latents_spatial)
-
+            
             # v = pyro.param("v", torch.randn(self.n_latents_spatial, n_species))
             v_loc = torch.zeros(self.n_latents_spatial, n_species)
             v_scale = torch.ones(self.n_latents_spatial, n_species)
@@ -132,6 +135,7 @@ class EcoGP(pyro.nn.PyroModule):
         with species_plate:
             bias = pyro.sample("b", dist.Normal(loc=torch.zeros(n_species), scale=torch.ones(n_species)))
 
+        bias = bias.to(f_samples.device) # added because of gpu version of response curves
         z = z + bias
 
         self.likelihood(z, Y, training, samples_plate, species_plate)
@@ -147,6 +151,8 @@ class EcoGP(pyro.nn.PyroModule):
         :param training: Boolean indicating if the model is in training mode.
         :return: None
         """
+        
+        #print("Y here:", Y)
         n_species = Y.size(1) if Y is not None else None
         n_traits = traits.size(1) if traits is not None else None
 

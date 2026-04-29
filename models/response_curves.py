@@ -19,6 +19,7 @@ import plotly.graph_objects as go
 
 
 def get_response(n_samples, n_values, variable, model, dataset, iter_range=range(100)):
+    model.n_latents_spatial = None
     predictive = pyro.infer.Predictive(model.model, guide=model.guide, num_samples=n_samples)
 
     diff_env_inputs = torch.linspace(dataset.X[:, variable].min(), dataset.X[:, variable].max(), n_values)
@@ -34,9 +35,8 @@ def get_response(n_samples, n_values, variable, model, dataset, iter_range=range
 
         x[:, variable] = diff_env_inputs
 
-        range_batch = {'n_samples_batch': n_values, 'n_species': dataset.n_species, 'n_env': dataset.n_env, 'X': x, "training": False}
-
-        samples_z = predictive(range_batch)["z"].squeeze()
+        #range_batch = {'n_samples_batch': n_values, 'n_species': dataset.n_species, 'n_env': dataset.n_env, 'X': x, "training": False}
+        samples_z = predictive(X=x, Y=torch.ones(x.size(0), dataset.Y.size(1)), coords=None, traits=dataset.traits, training=False)["z"].squeeze()
 
         logits_mean = samples_z.mean(dim=0)
         logits_std = samples_z.std(dim=0)
@@ -96,9 +96,26 @@ def _worker_run_one(args):
     diff_env_inputs = torch.linspace(dataset.X[:, var_idx].min(),
                                      dataset.X[:, var_idx].max(),
                                      n_values)
+    
+    A_ = dataset.X.to(torch.float32)
+    cont = torch.isfinite(A_).all(0) & (A_ != torch.floor(A_)).all(0)
+    
+    kept = torch.nonzero(cont, as_tuple=True)[0]
+
+    inv = torch.full((A_.size(1),), -1, dtype=torch.long, device=A_.device)
+    inv[kept] = torch.arange(kept.numel(), device=A_.device)
+
+    new_idx = inv[var_idx].item()
+
+    #x_values = torch.round(
+    #    diff_env_inputs * dataset.X_continuous_std[var_idx]
+    #    + dataset.X_continuous_mean[var_idx],
+    #    decimals=2
+    #)
+
     x_values = torch.round(
-        diff_env_inputs * dataset.X_continuous_std[var_idx]
-        + dataset.X_continuous_mean[var_idx],
+        diff_env_inputs * dataset.X_continuous_std[new_idx]
+        + dataset.X_continuous_mean[new_idx],
         decimals=2
     )
 
@@ -124,7 +141,7 @@ def _worker_run_one(args):
 
     # Flatten to long form: rows = n_values * n_species
     df_one = pd.DataFrame({
-        "variable_idx": np.repeat(dataset.env_names_continuous[var_idx], len(x_np) * len(species)),
+        "variable_idx": np.repeat(dataset.env_names[var_idx], len(x_np) * len(species)),
         "x_value":      np.repeat(x_np, len(species)),
         "species":      np.tile(species, len(x_np)),
         "mean":         mean_np.reshape(-1),
@@ -142,33 +159,36 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--config",
-        type=str,
-        default="config_butterfly",  # TODO: Change config here or when running in terminal
-        help="Name of the config file (without .py extension, must be in configs/)",
-    )
-
+#    parser.add_argument(
+#        "--config",
+#        type=str,
+#        default="config_butterfly",  # TODO: Change config here or when running in terminal
+#        help="Name of the config file (without .py extension, must be in configs/)",
+    parser.add_argument("--save_model_path", type=str, help="Path to save the trained model.")
+#
     args = parser.parse_args()
+    save_model_path = args.save_model_path
 
-    print(f"Config File: {args.config}")
+#    print(f"Config File: {args.config}")
 
-    config_module = importlib.import_module(f"configs.{args.config}")
-    config = config_module.config  # Import the config module
+#    config_module = importlib.import_module(f"configs.{args.config}")
+#    config = config_module.config  # Import the config module
 
-    save_model_path = config["general"]["save_model_path"]
+#    save_model_path = config["general"]["save_model_path"]
 
     pyro.clear_param_store()
     dataset = torch.load(os.path.join(save_model_path, "dataset.pt"),
                          map_location="cpu", weights_only=False)
 
-    print("N_env: ", dataset.n_env)
-    print("Dim X", dataset.X.shape)
-    n_samples = 50
-    n_values  = 250
+    #print("N_env: ", dataset.n_env)
+    #print("Dim X", dataset.X.shape)
+    n_samples = 100 # 50
+    n_values  = 250 # 250
     iter_range = [0]                  # or range(K)
-    variable_idxs = list(range(dataset.n_env))   # e.g., 0..9
-    print(variable_idxs)
+    #variable_idxs = list(range(dataset.n_env))   # e.g., 0..9
+    print(type(dataset.X))
+    variable_idxs = torch.where(torch.isfinite(dataset.X).all(0) & (dataset.X != torch.floor(dataset.X)).all(0))[0].tolist()
+    #print(variable_idxs)
 
     # ---- compute importance ONCE (CPU) ----
     
@@ -203,7 +223,7 @@ if __name__ == "__main__":
         importance = ((w ** 2 * outputscale ** 2) @ (1 / lengthscale)).detach()
 
         pd.DataFrame(_to_cpu_np(importance), columns=dataset.env_names, index=dataset.taxon_names) \
-            .to_csv(os.path.join(save_model_path, "env_species_importance.csv"), index=True)
+            .to_csv(os.path.join(save_model_path, "env_taxon_importance.csv"), index=True)
 
         # ---- parallel over variable_idx with multiprocessing.Pool ----
         # Use "spawn" to avoid inheriting Pyro/Torch state; safe on CPU too.
@@ -212,17 +232,17 @@ if __name__ == "__main__":
         # Pick a sensible number of processes (tune for your node)
         n_procs = min(len(variable_idxs), max(1, mp.cpu_count() // 2))
 
-        # args_iterable = [
-        #     (vidx, n_samples, n_values, iter_range, save_model_path)
-        #     for vidx in variable_idxs
-        # ]
+        args_iterable = [
+            (vidx, n_samples, n_values, iter_range, save_model_path)
+            for vidx in variable_idxs
+        ]
 
-        # with mp.Pool(processes=n_procs) as pool:
-        #     for vidx_done in pool.imap_unordered(_worker_run_one, args_iterable):
-        #         print(f"[OK] variable_idx") #={vidx_done}")
+        with mp.Pool(processes=n_procs) as pool:
+            for vidx_done in pool.imap_unordered(_worker_run_one, args_iterable):
+                print(f"[OK] variable_idx") #={vidx_done}")
             
-        #     dfs = list(pool.imap_unordered(_worker_run_one, args_iterable))  # worker returns df_one
-        #     pd.concat(dfs, ignore_index=True).to_csv(os.path.join(save_model_path, "responses_all_vars.csv"), index=False)
+            dfs = list(pool.imap_unordered(_worker_run_one, args_iterable))  # worker returns df_one
+            pd.concat(dfs, ignore_index=True).to_csv(os.path.join(save_model_path, "responses_all_vars.csv"), index=False)
 
 
         print("All variable_idx jobs finished.")
