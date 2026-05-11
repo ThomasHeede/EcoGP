@@ -1,0 +1,17 @@
+name: r2r
+channels:
+  - conda-forge
+  - pytorch
+  - defaults
+dependencies:
+  - python=3.11
+  - pip
+  - pyro-ppl==1.9.1
+  - pytorch==2.7.1
+  - tqdm==4.67.1
+  - pandas==2.2.3
+  - numpy==2.2.4
+  - polars==1.26.0
+  - gpytorch==1.14
+  - pyproj==3.7.2
+  - rasterio==1.4.4
