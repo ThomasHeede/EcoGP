@@ -2,21 +2,14 @@ import torch
 import pyro
 import pyro.distributions as dist
 import gpytorch
-import matplotlib.pyplot as plt
-import plotly.graph_objects as go
-import tqdm
-
-import wandb
-import sys
-import os
 import warnings
 
-from MultitaskVariationalStrategy import MultitaskVariationalStrategy
-from likelihoods import DirichletMultinomialLikelihood, BernoulliLikelihood
+from models.MultitaskVariationalStrategy import MultitaskVariationalStrategy
+from models.likelihoods import DirichletMultinomialLikelihood, BernoulliLikelihood
 
 class EcoGP(pyro.nn.PyroModule):
     """
-    EcoGP model combining environmental and spatial Gaussian Processes.
+    EcoGP_remove model combining environmental and spatial Gaussian Processes.
     """
     def __init__(self,
                  n_latents_env=None,
@@ -53,7 +46,7 @@ class EcoGP(pyro.nn.PyroModule):
 
     def model(self, X=None, Y=None, coords=None, traits=None, training=True):
         """
-        Model specification for EcoGP.
+        Model specification for EcoGP_remove.
 
         :param X: Environmental features as a tensor of shape [n_samples, n_variables].
         :param Y: Species occurrence/abundance data as a tensor of shape [n_samples, n_species].
@@ -138,7 +131,7 @@ class EcoGP(pyro.nn.PyroModule):
 
     def guide(self, X=None, Y=None, coords=None, traits=None, training=True):
         """
-        Variational guide for EcoGP.
+        Variational guide for EcoGP_remove.
 
         :param X: Environmental features as a tensor of shape [n_samples, n_variables].
         :param Y: Species occurrence/abundance data as a tensor of shape [n_samples, n_species].
@@ -286,7 +279,7 @@ class EcoGP(pyro.nn.PyroModule):
 
 class EnvironmentGP(gpytorch.models.ApproximateGP):
     """
-    Environmental Gaussian Process model for EcoGP.
+    Environmental Gaussian Process model for EcoGP_remove.
     """
     def __init__(self, n_latents, n_variables, n_inducing_points):
         self.n_latents = n_latents
@@ -367,7 +360,7 @@ class HaversineRBFKernel(gpytorch.kernels.Kernel):
 
 class SpatialGP(gpytorch.models.ApproximateGP):
     """
-    Spatial Gaussian Process model for EcoGP.
+    Spatial Gaussian Process model for EcoGP_remove.
     """
     def __init__(self, n_latents, unique_coordinates, n_inducing_points):
         self.n_latents = n_latents

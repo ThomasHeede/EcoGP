@@ -43,6 +43,9 @@ class DataLoad():
         self.X_continuous_mean = None
         self.X_continuous_std = None
 
+        self.coords_mean = 0
+        self.coords_std = 1
+
         # Data
         self.load_X(X_path)
         self.load_Y(Y_path)
@@ -54,10 +57,10 @@ class DataLoad():
         self.transform_Y(total_counts_path)
         self.unique_coordinates()
 
-        self.n_species = self.Y.shape[1]
+        self.n_species = self.Y.shape[1] if self.Y is not None else None
         self.n_env = self.X.shape[1]
-        assert self.Y.shape[0] == self.X.shape[0], "Samples in X and Y differ!"
-        self.n_samples = self.Y.shape[0]
+        # assert self.Y.shape[0] == self.X.shape[0], "Samples in X and Y differ!"
+        self.n_samples = self.X.shape[0]
         if self.using_traits:
             self.n_traits = self.traits.shape[1]
 
@@ -72,23 +75,28 @@ class DataLoad():
             print(f"Load X: {len(self.site_names)} sample sites and {len(self.env_names)} environmental variables")
 
     def load_Y(self, Y_path):
-        Y = pl.read_csv(Y_path, infer_schema_length=100_000)
-        self.site_names = np.array(Y.select(pl.first())[:, 0])
-        Y = Y.select(Y.columns[1:])  # Remove species names
-        self.taxon_names = np.array(Y.columns)
-        self.Y = torch.tensor(Y.to_numpy(), dtype=torch.float32)
+        if Y_path:
+            Y = pl.read_csv(Y_path, infer_schema_length=100_000)
+            self.site_names = np.array(Y.select(pl.first())[:, 0])
+            Y = Y.select(Y.columns[1:])  # Remove species names
+            self.taxon_names = np.array(Y.columns)
+            self.Y = torch.tensor(Y.to_numpy(), dtype=torch.float32)
 
-        if self.verbose:
-            print(f"Load Y: {len(self.site_names)} sample sites and {len(self.taxon_names)} taxons")
+            if self.verbose:
+                print(f"Load Y: {len(self.site_names)} sample sites and {len(self.taxon_names)} taxons")
+        else:
+            print("No species given!")
 
     def load_coords(self, coords_path):
         # Distance matrix
         if self.using_coordinates:
             self.coords = torch.tensor(pd.read_csv(coords_path, index_col=0).values, dtype=torch.float32)
 
-            if True:  # Std norm coordinates
+            if self.normalize_X:  # TODO: FIX not relying on normalization of X!
                 print("Standard Normalizing Coordinates")
-                self.coords = (self.coords - self.coords.mean(dim=0)) / self.coords.std(dim=0)
+                self.coords_mean = self.coords.mean(dim=0)
+                self.coords_std = self.coords.std(dim=0)
+                self.coords = (self.coords - self.coords_mean) / self.coords_std
 
     def load_traits(self, traits_path):
         if self.using_traits:
@@ -117,18 +125,20 @@ class DataLoad():
         keep_sites = ~torch.any(self.X.isnan(), dim=1)
         self.site_names = self.site_names[keep_sites]
         self.X = self.X[keep_sites, :]
-        self.Y = self.Y[keep_sites, :]
+        if self.Y is not None:
+            self.Y = self.Y[keep_sites, :]
         if self.using_coordinates:
             self.coords = self.coords[keep_sites, :]
 
     def validate_Y(self):
-        # Check for 0 standard deviation
-        taxon_std = self.Y.std(dim=0)
-        taxon_std_non_0 = taxon_std != 0
-        self.taxon_names = self.taxon_names[taxon_std_non_0]
-        self.Y = self.Y[:, taxon_std_non_0]
-        if self.using_traits:
-            self.traits = self.traits[taxon_std_non_0, :]
+        if self.Y is not None:
+            # Check for 0 standard deviation
+            taxon_std = self.Y.std(dim=0)
+            taxon_std_non_0 = taxon_std != 0
+            self.taxon_names = self.taxon_names[taxon_std_non_0]
+            self.Y = self.Y[:, taxon_std_non_0]
+            if self.using_traits:
+                self.traits = self.traits[taxon_std_non_0, :]
 
         # TODO: More checks
 
@@ -141,14 +151,15 @@ class DataLoad():
             self.X[:, self.X_continuous] = (self.X[:, self.X_continuous] - self.X_continuous_mean) / self.X_continuous_std
 
     def transform_Y(self, total_counts_path):
-        if self.presence_absence_Y:
-            self.Y = self.Y.bool().float()
-        elif total_counts_path:
-            # Make sure sum(Y_i)=1
-            self.Y / self.Y.sum(dim=1, keepdim=True)
+        if self.Y is not None:
+            if self.presence_absence_Y:
+                self.Y = self.Y.bool().float()
+            elif total_counts_path:
+                # Make sure sum(Y_i)=1
+                self.Y / self.Y.sum(dim=1, keepdim=True)
 
-            self.total_counts = torch.tensor(pd.read_csv(total_counts_path, index_col=0).values)
-            self.Y = (self.Y * self.total_counts).round().int()
+                self.total_counts = torch.tensor(pd.read_csv(total_counts_path, index_col=0).values)
+                self.Y = (self.Y * self.total_counts).round().int()
 
     def unique_coordinates(self):
         if self.using_coordinates:

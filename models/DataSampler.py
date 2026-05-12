@@ -11,7 +11,7 @@ class DataSampler(Dataset):
         self.__dict__.update(data.__dict__)
 
     def __len__(self):
-        return len(self.Y)
+        return len(self.Y) if self.Y is not None else len(self.X)
 
     def __getitem__(self, idx):
         return idx
