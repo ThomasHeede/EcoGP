@@ -3,6 +3,9 @@ configs/config_mfd2_public_noNAs.py
 
 # Dev
 models/env_dim_screener.py
+raster_to_raster/direct_pred.py
+raster_to_raster/test/results/
+raster_to_raster/test/data/output_raster/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
